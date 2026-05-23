@@ -10,6 +10,7 @@ from .rag_service import (
     initialize_services,
     cleanup_services
 )
+from .history_service import history_service, HistoryService
 
 __all__ = [
     "llm_service",
@@ -21,5 +22,7 @@ __all__ = [
     "embedding_service",
     "EmbeddingService",
     "initialize_services",
-    "cleanup_services"
+    "cleanup_services",
+    "history_service",
+    "HistoryService"
 ]
