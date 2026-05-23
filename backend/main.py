@@ -1,147 +1,111 @@
-from fastapi import FastAPI, HTTPException
+"""
+Agent 对话应用后端服务
+使用 FastAPI + ChromaDB + RAG 架构
+"""
+from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel
-from typing import List, Optional
-import chromadb
-from chromadb.config import Settings
-from openai import AsyncOpenAI
-import os
 from contextlib import asynccontextmanager
+import os
+import sys
 
+# 添加项目路径
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-USE_DOUBAO_EMBEDDING = os.getenv("USE_DOUBAO_EMBEDDING", "false").lower() == "true"
-DOUBAO_MODEL = os.getenv("DOUBAO_MODEL", "ep-20260514111645-lmgt2")
+from config.settings import settings
+from service.llm_service import llm_service
+from service.rag_service import initialize_services, cleanup_services
+from api.chat import router as chat_router
+from api.knowledge import router as knowledge_router
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    global chroma_client, collection, llm_client, embedding_client
-    chroma_client = chromadb.PersistentClient(
-        path="./data/chroma",
-        settings=Settings(anonymized_telemetry=False)
-    )
-    
-    if USE_DOUBAO_EMBEDDING:
-        from chromadb.utils import embedding_functions
-        doubao_ef = embedding_functions.OpenAIEmbeddingFunction(
-            api_key=os.getenv("DOUBAO_API_KEY", "your_doubao_key_here"),
-            api_base="https://ark.cn-beijing.volces.com/api/v3",
-            model_name="doubao-embedding-vision"
-        )
-        collection = chroma_client.get_or_create_collection(
-            name="agent_knowledge",
-            embedding_function=doubao_ef
-        )
-        print("✅ 使用豆包 Doubao-embedding-vision 作为向量模型")
-    else:
-        collection = chroma_client.get_or_create_collection(name="agent_knowledge")
-        print("✅ 使用本地免费 all-MiniLM-L6-v2 Embedding 模型，无需任何API Key")
-    
-    llm_client = AsyncOpenAI(
-        api_key=os.getenv("DOUBAO_API_KEY", "your_doubao_key_here"),
-        base_url="https://ark.cn-beijing.volces.com/api/v3"
-    )
-    
-    if USE_DOUBAO_EMBEDDING:
-        embedding_client = AsyncOpenAI(
-            api_key=os.getenv("DOUBAO_API_KEY", "your_doubao_key_here"),
-            base_url="https://ark.cn-beijing.volces.com/api/v3"
-        )
-    else:
-        embedding_client = None
-    
+    """应用生命周期管理
+
+    使用 FastAPI 的 lifespan 管理器替代之前的 global 变量模式，
+    确保服务启动和关闭时的资源管理。
+    """
+    print("🚀 正在启动服务...")
+
+    # 初始化服务
+    try:
+        initialize_services()
+        print("✅ 服务启动成功")
+    except Exception as e:
+        print(f"❌ 服务启动失败: {e}")
+        raise
+
     yield
-    print("Shutting down...")
+
+    # 清理资源
+    print("🛑 正在关闭服务...")
+    cleanup_services()
+    print("✅ 服务已关闭")
 
 
-app = FastAPI(title="Agent对话应用后端", lifespan=lifespan)
+# 创建 FastAPI 应用实例
+app = FastAPI(
+    title="Agent 对话应用后端",
+    description="基于 RAG 架构的智能对话系统",
+    version="1.0.0",
+    lifespan=lifespan
+)
 
+# 配置 CORS 中间件
+# 安全性改进：将 CORS origins 从 "*" 改为配置化管理
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=settings.cors_origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-
-class ChatMessage(BaseModel):
-    role: str
-    content: str
-
-
-class ChatRequest(BaseModel):
-    messages: List[ChatMessage]
-    user_query: str
-
-
-class ChatResponse(BaseModel):
-    reply: str
-
-
-class AddKnowledgeRequest(BaseModel):
-    content: str
-    metadata: Optional[dict] = None
-
-
-@app.post("/api/chat", response_model=ChatResponse)
-async def chat_endpoint(request: ChatRequest):
-    api_key = os.getenv("DOUBAO_API_KEY", "")
-    
-    if not api_key or api_key == "your_doubao_key_here":
-        return ChatResponse(reply=f"您好！我收到了您的消息：'{request.user_query}'。\n\n这是模拟回复。要使用真实的AI对话功能，请配置 DOUBAO_API_KEY 环境变量。")
-    
-    try:
-        results = collection.query(
-            query_texts=[request.user_query],
-            n_results=3
-        )
-        context_docs = "\n".join([str(doc) for doc in results['documents'][0]]) if results['documents'] else ""
-        
-        system_prompt = f"""你是一个智能Agent对话助手。
-参考知识库内容：
-{context_docs}
-
-请基于以上知识库内容和用户进行友好对话，如果知识库中没有相关内容就正常回答用户问题。"""
-
-        messages = [{"role": "system", "content": system_prompt}]
-        for msg in request.messages:
-            messages.append({"role": msg.role, "content": msg.content})
-        messages.append({"role": "user", "content": request.user_query})
-
-        response = await llm_client.chat.completions.create(
-            model=DOUBAO_MODEL,
-            messages=messages,
-            temperature=0.7
-        )
-        reply_content = response.choices[0].message.content or "抱歉，我现在无法回答您的问题。"
-        
-        return ChatResponse(reply=reply_content)
-    except Exception as e:
-        error_msg = str(e).encode('utf-8').decode('utf-8', errors='replace')
-        print(f"Error: {error_msg}")
-        raise HTTPException(status_code=500, detail=error_msg)
-
-
-@app.post("/api/add_knowledge")
-async def add_knowledge(request: AddKnowledgeRequest):
-    try:
-        collection.add(
-            documents=[request.content],
-            metadatas=[request.metadata or {}],
-            ids=[f"doc_{collection.count() + 1}"]
-        )
-        return {"status": "success", "message": "知识添加成功"}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+# 注册路由
+app.include_router(chat_router)
+app.include_router(knowledge_router)
 
 
 @app.get("/")
 async def root():
-    return {"message": "Agent对话应用后端服务运行正常！"}
+    """根路径 - 服务健康检查"""
+    return {
+        "message": "Agent 对话应用后端服务运行正常！",
+        "version": "1.0.0",
+        "docs": "/docs"
+    }
+
+
+@app.get("/health")
+async def health_check():
+    """健康检查端点
+
+    用于 Kubernetes/负载均衡器的健康探测
+    """
+    from service.rag_service import vector_store
+
+    return {
+        "status": "healthy",
+        "services": {
+            "vector_store": vector_store is not None,
+            "llm_client": llm_service.client is not None
+        },
+        "stats": {
+            "total_documents": vector_store.get_count() if vector_store else 0
+        }
+    }
 
 
 if __name__ == "__main__":
     import uvicorn
-    os.makedirs("./data/chroma", exist_ok=True)
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+
+    # 确保数据目录存在
+    os.makedirs(settings.chroma_path, exist_ok=True)
+
+    # 运行服务
+    uvicorn.run(
+        app,
+        host=settings.server_host,
+        port=settings.server_port,
+        log_level="info"
+    )
