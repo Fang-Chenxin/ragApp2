@@ -16,4 +16,5 @@
 - 📝 更新 [README.md](file:///home/fang/Documents/trae_projects/ragApp/README.md) - 更新 Android 应用开发说明
 
 ### Fixed
+- 🛡️ 修复点击当前空对话会被错误删除的问题 - [详细文档](docs/变更摘要/对话列表点击当前空对话误删除修复.md)
 - 🛡️ 修复服务器地址配置缺少 URL 格式验证的问题 - 确保 URL 必须以 http:// 或 https:// 开头

@@ -200,6 +200,12 @@ class ConversationsActivity : AppCompatActivity() {
     }
     
     private fun selectConversation(conv: Conversation) {
+        // 如果点击的就是当前会话，直接切换
+        if (conv.convId == currentConvId) {
+            switchToConversation(conv)
+            return
+        }
+        
         // 检查当前会话是否为空，如果为空则先删除
         val currentConv = conversations.find { it.convId == currentConvId }
         if (currentConv != null && currentConv.messageCount == 0) {
