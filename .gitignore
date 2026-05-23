@@ -1,0 +1,48 @@
+# Python
+venv/
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.egg-info/
+dist/
+build/
+*.egg
+
+# 环境变量
+.env
+.env.local
+
+# 数据文件
+backend/data/
+backend/*.log
+*.sqlite3
+
+# IDE
+.idea/
+.vscode/
+*.iml
+*.swp
+*.swo
+
+# Android / Gradle
+android_app/.gradle/
+android_app/app/build/
+android_app/build/
+android_app/local.properties
+gradle-home/
+*.apk
+*.aab
+
+# Kivy
+.kivy/
+
+# 系统文件
+.DS_Store
+Thumbs.db
+*.log
+
+# 临时文件
+*.tmp
+*.temp

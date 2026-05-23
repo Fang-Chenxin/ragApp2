@@ -1,0 +1,3 @@
+-keep class com.example.agentchat.** { *; }
+-dontwarn okhttp3.**
+-keep class okhttp3.** { *; }
