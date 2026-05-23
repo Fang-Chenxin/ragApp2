@@ -1,6 +1,6 @@
 """LLM 服务层 - 封装大模型调用"""
 from openai import AsyncOpenAI
-from typing import Optional, Dict, List
+from typing import Optional, Dict, List, AsyncGenerator
 from config.settings import settings
 
 
@@ -71,6 +71,36 @@ class LLMService:
         )
 
         return response.choices[0].message.content or "抱歉，我现在无法回答您的问题。"
+
+    async def chat_stream(
+        self,
+        messages: List[Dict[str, str]],
+        temperature: Optional[float] = None
+    ) -> AsyncGenerator[str, None]:
+        """流式调用大模型生成回复
+
+        Args:
+            messages: 消息列表，包含 role 和 content
+            temperature: 温度参数，控制随机性
+
+        Yields:
+            模型生成的回复内容片段
+        """
+        if not self.client:
+            raise RuntimeError("LLM 客户端未初始化，请配置 LLM_API_KEY")
+
+        temp = temperature or settings.rag_temperature
+
+        stream = await self.client.chat.completions.create(
+            model=self.model,
+            messages=messages,
+            temperature=temp,
+            stream=True
+        )
+
+        async for chunk in stream:
+            if chunk.choices[0].delta.content is not None:
+                yield chunk.choices[0].delta.content
 
     def close(self):
         """关闭 LLM 客户端"""

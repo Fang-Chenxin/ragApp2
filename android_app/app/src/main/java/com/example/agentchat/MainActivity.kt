@@ -38,6 +38,13 @@ data class ChatResponse(
     @SerializedName("history_saved") val historySaved: Boolean = true,
     @SerializedName("conv_id") val convId: String? = null
 )
+data class StreamResponse(
+    val content: String = "",
+    @SerializedName("conv_id") val convId: String? = null,
+    @SerializedName("history_saved") val historySaved: Boolean = true,
+    val done: Boolean = false,
+    val error: String? = null
+)
 data class HistoryResponse(
     val userId: String,
     @SerializedName("conv_id") val convId: String?,
@@ -382,9 +389,12 @@ class MainActivity : AppCompatActivity() {
         val mediaType = "application/json; charset=utf-8".toMediaType()
         val body = requestBodyJson.toRequestBody(mediaType)
         val request = Request.Builder()
-            .url("$BACKEND_URL/api/chat")
+            .url("$BACKEND_URL/api/chat/stream")
             .post(body)
             .build()
+
+        var assistantMessageIndex = -1
+        var fullContent = StringBuilder()
 
         client.newCall(request).enqueue(object : Callback {
             override fun onFailure(call: Call, e: IOException) {
@@ -401,24 +411,72 @@ class MainActivity : AppCompatActivity() {
                         }
                         return
                     }
-                    val responseBody = response.body?.string()
+                    
                     try {
-                        val chatResponse = gson.fromJson(responseBody, ChatResponse::class.java)
-                        runOnUiThread {
-                            // 更新会话ID
-                            if (chatResponse.convId != null) {
-                                currentConvId = chatResponse.convId
+                        response.body?.byteStream()?.bufferedReader()?.use { reader ->
+                            var line: String? = reader.readLine()
+                            while (line != null) {
+                                if (line.startsWith("data: ")) {
+                                    val jsonData = line.substring(6)
+                                    try {
+                                        val streamResponse = gson.fromJson(jsonData, StreamResponse::class.java)
+                                        
+                                        runOnUiThread {
+                                            if (streamResponse.error != null) {
+                                                if (assistantMessageIndex == -1) {
+                                                    addAssistantMessage("错误: ${streamResponse.error}")
+                                                } else {
+                                                    updateAssistantMessage(assistantMessageIndex, "错误: ${streamResponse.error}")
+                                                }
+                                                return@runOnUiThread
+                                            }
+                                            
+                                            if (streamResponse.content.isNotEmpty()) {
+                                                fullContent.append(streamResponse.content)
+                                                
+                                                if (assistantMessageIndex == -1) {
+                                                    messages.add(ChatMessage("assistant", streamResponse.content))
+                                                    assistantMessageIndex = messages.size - 1
+                                                    adapter.notifyItemInserted(assistantMessageIndex)
+                                                } else {
+                                                    messages[assistantMessageIndex] = ChatMessage("assistant", fullContent.toString())
+                                                    adapter.notifyItemChanged(assistantMessageIndex)
+                                                }
+                                                recyclerView.scrollToPosition(assistantMessageIndex)
+                                            }
+                                            
+                                            if (streamResponse.done) {
+                                                if (streamResponse.convId != null) {
+                                                    currentConvId = streamResponse.convId
+                                                }
+                                                
+                                                if (assistantMessageIndex == -1 && fullContent.isEmpty()) {
+                                                    addAssistantMessage("收到空响应")
+                                                }
+                                            }
+                                        }
+                                    } catch (e: Exception) {
+                                        e.printStackTrace()
+                                    }
+                                }
+                                line = reader.readLine()
                             }
-                            addAssistantMessage(chatResponse.reply)
                         }
-                    } catch (_: Exception) {
+                    } catch (e: Exception) {
                         runOnUiThread {
-                            addAssistantMessage("解析响应失败")
+                            addAssistantMessage("解析响应失败: ${e.message}")
                         }
                     }
                 }
             }
         })
+    }
+
+    private fun updateAssistantMessage(index: Int, content: String) {
+        if (index >= 0 && index < messages.size) {
+            messages[index] = ChatMessage("assistant", content)
+            adapter.notifyItemChanged(index)
+        }
     }
 
     private fun addAssistantMessage(content: String) {

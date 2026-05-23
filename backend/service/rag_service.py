@@ -2,7 +2,7 @@
 import chromadb
 from chromadb.config import Settings
 from chromadb.types import Collection
-from typing import List, Dict, Optional, Any, TYPE_CHECKING
+from typing import List, Dict, Optional, Any, AsyncGenerator, TYPE_CHECKING
 from openai import AsyncOpenAI
 from config.settings import settings
 from service.llm_service import llm_service, LLMService
@@ -202,6 +202,46 @@ class RAGService:
         # 4. 调用 LLM 生成回复
         reply = await self.llm.chat(messages)
         return reply
+
+    async def chat_with_rag_stream(
+        self,
+        user_query: str,
+        conversation_history: Optional[List[Dict[str, str]]] = None
+    ) -> AsyncGenerator[str, None]:
+        """使用 RAG 进行流式对话
+
+        Args:
+            user_query: 用户问题
+            conversation_history: 对话历史
+
+        Yields:
+            AI 回复片段
+        """
+        # 1. 检索相关文档
+        context_docs = self.vector_store.query(user_query)
+        context_text = "\n".join([str(doc) for doc in context_docs])
+
+        # 2. 构建系统提示词
+        system_prompt = f"""你是一个智能Agent对话助手。
+参考知识库内容：
+{context_text}
+
+请基于以上知识库内容和用户进行友好对话，如果知识库中没有相关内容就正常回答用户问题。"""
+
+        # 3. 构建消息列表
+        messages = [{"role": "system", "content": system_prompt}]
+
+        # 添加对话历史
+        if conversation_history:
+            for msg in conversation_history:
+                messages.append({"role": msg["role"], "content": msg["content"]})
+
+        # 添加当前用户问题
+        messages.append({"role": "user", "content": user_query})
+
+        # 4. 流式调用 LLM 生成回复
+        async for chunk in self.llm.chat_stream(messages):
+            yield chunk
 
 
 # 创建全局服务实例

@@ -1,7 +1,9 @@
 """API 路由层 - 聊天相关接口"""
 from fastapi import APIRouter, HTTPException, Header
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from typing import List, Optional
+import json
 
 router = APIRouter(prefix="/api", tags=["chat"])
 
@@ -111,6 +113,117 @@ async def chat_endpoint(request: ChatRequest):
     except Exception as e:
         error_msg = str(e)
         print(f"聊天接口错误: {error_msg}")
+        raise HTTPException(status_code=500, detail=error_msg)
+
+
+@router.post("/chat/stream")
+async def chat_stream_endpoint(request: ChatRequest):
+    """流式聊天接口 - 使用 RAG 进行智能对话，流式返回结果
+
+    Args:
+        request: 聊天请求，包含对话历史和当前问题
+
+    Returns:
+        SSE 流式响应，每个事件包含一个文本片段
+
+    Raises:
+        HTTPException: 处理过程中的错误
+    """
+    try:
+        from service.rag_service import rag_service
+        from service.llm_service import llm_service
+        from service.history_service import history_service
+        
+        current_conv_id = history_service.ensure_default_conversation(request.user_id)
+        
+        if request.conv_id:
+            convs = history_service.get_conversations(request.user_id)
+            conv_ids = [conv["conv_id"] for conv in convs]
+            if request.conv_id in conv_ids:
+                current_conv_id = request.conv_id
+
+        if not rag_service:
+            raise HTTPException(
+                status_code=500,
+                detail="RAG 服务未初始化，请检查服务器配置"
+            )
+
+        if not llm_service.connected:
+            async def mock_stream():
+                mock_reply = f"您好！我收到了您的消息：'{request.user_query}'。\n\n这是模拟回复。要使用真实的AI对话功能，请配置 LLM_API_KEY 环境变量。"
+                data = {
+                    "content": mock_reply,
+                    "conv_id": current_conv_id,
+                    "history_saved": False,
+                    "done": True
+                }
+                yield f"data: {json.dumps(data, ensure_ascii=False)}\n\n"
+            
+            return StreamingResponse(
+                mock_stream(),
+                media_type="text/event-stream",
+                headers={
+                    "Cache-Control": "no-cache",
+                    "Connection": "keep-alive",
+                }
+            )
+
+        history = [
+            {"role": msg.role, "content": msg.content}
+            for msg in request.messages
+            if msg.role != "system"
+        ]
+
+        async def generate_stream():
+            full_reply = ""
+            try:
+                async for chunk in rag_service.chat_with_rag_stream(
+                    user_query=request.user_query,
+                    conversation_history=history
+                ):
+                    full_reply += chunk
+                    data = {
+                        "content": chunk,
+                        "conv_id": current_conv_id,
+                        "done": False
+                    }
+                    yield f"data: {json.dumps(data, ensure_ascii=False)}\n\n"
+                
+                try:
+                    history_service.save_message(request.user_id, current_conv_id, "user", request.user_query)
+                    history_service.save_message(request.user_id, current_conv_id, "assistant", full_reply)
+                    history_saved = True
+                except Exception as e:
+                    print(f"保存对话历史失败: {e}")
+                    history_saved = False
+                
+                data = {
+                    "content": "",
+                    "conv_id": current_conv_id,
+                    "history_saved": history_saved,
+                    "done": True
+                }
+                yield f"data: {json.dumps(data, ensure_ascii=False)}\n\n"
+                
+            except Exception as e:
+                error_data = {
+                    "error": str(e),
+                    "done": True
+                }
+                yield f"data: {json.dumps(error_data, ensure_ascii=False)}\n\n"
+        
+        return StreamingResponse(
+            generate_stream(),
+            media_type="text/event-stream",
+            headers={
+                "Cache-Control": "no-cache",
+                "Connection": "keep-alive",
+            }
+        )
+
+    except Exception as e:
+        error_msg = str(e)
+        print(f"流式聊天接口错误: {error_msg}")
         raise HTTPException(status_code=500, detail=error_msg)
 
 
