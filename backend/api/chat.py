@@ -20,6 +20,7 @@ class ChatRequest(BaseModel):
     user_query: str
     user_id: Optional[str] = "default"  # 用户标识
     conv_id: Optional[str] = None  # 会话ID（可选，不指定则使用当前会话）
+    include_thinking: Optional[bool] = False  # 是否包含思考过程
 
 
 class ChatResponse(BaseModel):
@@ -176,22 +177,41 @@ async def chat_stream_endpoint(request: ChatRequest):
 
         async def generate_stream():
             full_reply = ""
+            full_thinking = ""
             try:
-                async for chunk in rag_service.chat_with_rag_stream(
+                # 无论开关状态，都调用带思考的接口，后台永久完整捕获并保存思考内容
+                async for chunk_data in rag_service.chat_with_rag_stream_with_thinking(
                     user_query=request.user_query,
                     conversation_history=history
                 ):
-                    full_reply += chunk
-                    data = {
-                        "content": chunk,
-                        "conv_id": current_conv_id,
-                        "done": False
-                    }
-                    yield f"data: {json.dumps(data, ensure_ascii=False)}\n\n"
+                    if "thinking" in chunk_data:
+                        thinking_content = chunk_data["thinking"]
+                        full_thinking += thinking_content  # 后台永久累加完整思考内容
+                        # 只有当开关打开时，才向前端流式推送思考内容
+                        if request.include_thinking:
+                            data = {
+                                "thinking": thinking_content,
+                                "conv_id": current_conv_id,
+                                "done": False
+                            }
+                            yield f"data: {json.dumps(data, ensure_ascii=False)}\n\n"
+                    elif "content" in chunk_data:
+                        content = chunk_data["content"]
+                        if content:
+                            full_reply += content
+                            data = {
+                                "content": content,
+                                "conv_id": current_conv_id,
+                                "done": False
+                            }
+                            yield f"data: {json.dumps(data, ensure_ascii=False)}\n\n"
                 
                 try:
                     history_service.save_message(request.user_id, current_conv_id, "user", request.user_query)
-                    history_service.save_message(request.user_id, current_conv_id, "assistant", full_reply)
+                    # 保存前清洗：去除思考内容前后无意义的空白换行
+                    cleaned_thinking = full_thinking.strip()
+                    # 如果清洗后是空字符串，就直接不传thinking，避免存储空值
+                    history_service.save_message(request.user_id, current_conv_id, "assistant", full_reply, cleaned_thinking if cleaned_thinking else None)
                     history_saved = True
                 except Exception as e:
                     print(f"保存对话历史失败: {e}")

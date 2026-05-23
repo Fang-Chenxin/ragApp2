@@ -26,12 +26,13 @@ import java.io.IOException
 import java.util.UUID
 
 
-data class ChatMessage(val role: String, val content: String)
+data class ChatMessage(val role: String, val content: String, val thinking: String? = null)
 data class ChatRequest(
     val messages: List<ChatMessage>,
     @SerializedName("user_query") val userQuery: String,
     @SerializedName("user_id") val userId: String,
-    @SerializedName("conv_id") val convId: String? = null
+    @SerializedName("conv_id") val convId: String? = null,
+    @SerializedName("include_thinking") val includeThinking: Boolean = false
 )
 data class ChatResponse(
     val reply: String,
@@ -40,6 +41,7 @@ data class ChatResponse(
 )
 data class StreamResponse(
     val content: String = "",
+    val thinking: String = "",
     @SerializedName("conv_id") val convId: String? = null,
     @SerializedName("history_saved") val historySaved: Boolean = true,
     val done: Boolean = false,
@@ -54,7 +56,8 @@ data class HistoryResponse(
 data class HistoryMessage(
     val role: String,
     val content: String,
-    val timestamp: String? = null
+    val timestamp: String? = null,
+    val thinking: String? = null
 )
 
 
@@ -63,7 +66,14 @@ class MainActivity : AppCompatActivity() {
     private lateinit var adapter: ChatAdapter
     private lateinit var recyclerView: RecyclerView
     private lateinit var editText: EditText
-    private val client = OkHttpClient()
+    private lateinit var thinkingSwitch: android.widget.Switch
+    
+    private val client = OkHttpClient.Builder()
+        .connectTimeout(30, java.util.concurrent.TimeUnit.SECONDS)
+        .readTimeout(120, java.util.concurrent.TimeUnit.SECONDS)
+        .writeTimeout(30, java.util.concurrent.TimeUnit.SECONDS)
+        .build()
+    
     private val gson = Gson()
     
     private lateinit var prefs: SharedPreferences
@@ -72,9 +82,10 @@ class MainActivity : AppCompatActivity() {
     private var currentConvTitle: String = "智能助手"
 
     companion object {
-        private const val BACKEND_URL = "http://192.168.8.105:8000"
+        private const val BACKEND_URL = "http://192.168.1.106:8000"
         private const val PREFS_NAME = "chat_prefs"
         private const val KEY_USER_ID = "user_id"
+        private const val KEY_INCLUDE_THINKING = "include_thinking"
         private const val REQUEST_CONVERSATION = 1001
         
         // private const val BACKEND_URL = "http://10.0.2.2:8000"  // 模拟器访问本机
@@ -96,11 +107,20 @@ class MainActivity : AppCompatActivity() {
         
         recyclerView = findViewById(R.id.chatRecyclerView)
         editText = findViewById(R.id.messageEditText)
+        thinkingSwitch = findViewById(R.id.thinkingSwitch)
         val sendButton = findViewById<Button>(R.id.sendButton)
 
         adapter = ChatAdapter(messages)
         recyclerView.layoutManager = LinearLayoutManager(this)
         recyclerView.adapter = adapter
+        
+        // 读取保存的思考开关状态
+        thinkingSwitch.isChecked = prefs.getBoolean(KEY_INCLUDE_THINKING, false)
+        thinkingSwitch.setOnCheckedChangeListener { _, isChecked ->
+            prefs.edit().putBoolean(KEY_INCLUDE_THINKING, isChecked).apply()
+            // 切换开关时，重新刷新历史记录以正确显示/隐藏思考过程
+            reloadHistoryWithCurrentThinkingState()
+        }
         
         // 应用启动时加载历史记录
         loadHistoryFromServer()
@@ -323,6 +343,13 @@ class MainActivity : AppCompatActivity() {
         }
     }
     
+    /**
+     * 根据当前开关状态重新加载历史并正确渲染
+     */
+    private fun reloadHistoryWithCurrentThinkingState() {
+        loadHistoryFromServer()
+    }
+    
     private fun loadHistoryFromServer() {
         var url = "$BACKEND_URL/api/history/$userId"
         if (currentConvId != null) {
@@ -351,11 +378,24 @@ class MainActivity : AppCompatActivity() {
                                 // 更新当前会话ID
                                 currentConvId = historyResponse.convId
                                 
-                                // 将历史记录加载到消息列表
+                                // 将历史记录加载到消息列表（完全重构建，不依赖内存旧数据）
                                 messages.clear()
-                                messages.addAll(historyResponse.history.map {
-                                    ChatMessage(it.role, it.content)
-                                })
+                                val showThinking = thinkingSwitch.isChecked
+                                
+                                // 处理历史记录，完全重新构建消息列表
+                                for (hMsg in historyResponse.history) {
+                                    if (hMsg.role == "user") {
+                                        messages.add(ChatMessage("user", hMsg.content))
+                                    } else if (hMsg.role == "assistant") {
+                                        // 如果有思考过程且开关打开，先显示思考消息
+                                        if (showThinking && !hMsg.thinking.isNullOrEmpty()) {
+                                            messages.add(ChatMessage("thinking", "🤔 " + hMsg.thinking))
+                                        }
+                                        // 再添加助手正式回复，把思考内容完整存到本地
+                                        messages.add(ChatMessage("assistant", hMsg.content, hMsg.thinking))
+                                    }
+                                }
+                                
                                 adapter.notifyDataSetChanged()
                                 
                                 if (messages.isNotEmpty()) {
@@ -380,11 +420,19 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun sendMessageToBackend() {
+        sendMessageToBackendWithRetry(retryCount = 0)
+    }
+    
+    private fun sendMessageToBackendWithRetry(retryCount: Int) {
         val lastUserMessage = messages.lastOrNull { it.role == "user" } ?: return
-        val previousMessages = messages.dropLast(1).filter { it.role != "system" }
+        // 构建给后端请求的历史消息，彻底剥离thinking字段，只保留 role 和 content，绝对不混入思考内容
+        val cleanedPreviousMessages = messages.dropLast(1)
+            .filter { it.role == "user" || it.role == "assistant" }  // 过滤掉本地临时的 thinking 显示消息
+            .map { ChatMessage(it.role, it.content, null) }  // 强制把thinking置空，结构纯净化
 
+        val showThinkingDuringStream = thinkingSwitch.isChecked
         val requestBodyJson = gson.toJson(
-            ChatRequest(previousMessages, lastUserMessage.content, userId, currentConvId)
+            ChatRequest(cleanedPreviousMessages, lastUserMessage.content, userId, currentConvId, showThinkingDuringStream)
         )
         val mediaType = "application/json; charset=utf-8".toMediaType()
         val body = requestBodyJson.toRequestBody(mediaType)
@@ -393,13 +441,42 @@ class MainActivity : AppCompatActivity() {
             .post(body)
             .build()
 
-        var assistantMessageIndex = -1
-        var fullContent = StringBuilder()
+        var assistantMainMessageIndex = -1
+        var thinkingDisplayIndex = -1
+        val fullContent = StringBuilder()
+        val fullThinking = StringBuilder()
+        var hasReceivedData = false
+        
+        // 先添加助手的空占位消息
+        runOnUiThread {
+            messages.add(ChatMessage("assistant", "🤔 正在思考...", ""))
+            assistantMainMessageIndex = messages.size - 1
+            adapter.notifyItemInserted(assistantMainMessageIndex)
+            recyclerView.scrollToPosition(assistantMainMessageIndex)
+        }
 
         client.newCall(request).enqueue(object : Callback {
             override fun onFailure(call: Call, e: IOException) {
                 runOnUiThread {
-                    addAssistantMessage("网络请求失败: ${e.message}")
+                    val errorMessage = when {
+                        e.message?.contains("timeout", ignoreCase = true) == true -> "请求超时，请稍后重试"
+                        e.message?.contains("connection", ignoreCase = true) == true -> "网络连接失败"
+                        else -> "网络请求失败: ${e.message}"
+                    }
+                    
+                    if (retryCount < 2 && e.message?.contains("timeout", ignoreCase = true) == true) {
+                        if (assistantMainMessageIndex >= 0) {
+                            updateAssistantMessage(assistantMainMessageIndex, "🔄 正在重试... (${retryCount + 1}/2)")
+                        }
+                        Toast.makeText(this@MainActivity, "正在重试... (${retryCount + 1}/2)", Toast.LENGTH_SHORT).show()
+                        sendMessageToBackendWithRetry(retryCount + 1)
+                    } else {
+                        if (assistantMainMessageIndex >= 0) {
+                            updateAssistantMessage(assistantMainMessageIndex, "❌ $errorMessage")
+                        } else {
+                            addAssistantMessage("❌ $errorMessage")
+                        }
+                    }
                 }
             }
 
@@ -407,7 +484,17 @@ class MainActivity : AppCompatActivity() {
                 response.use {
                     if (!response.isSuccessful) {
                         runOnUiThread {
-                            addAssistantMessage("服务器错误: ${response.code}")
+                            val errorMsg = when (response.code) {
+                                404 -> "服务接口不存在"
+                                500 -> "服务器内部错误"
+                                503 -> "服务暂时不可用"
+                                else -> "服务器错误: ${response.code}"
+                            }
+                            if (assistantMainMessageIndex >= 0) {
+                                updateAssistantMessage(assistantMainMessageIndex, "❌ $errorMsg")
+                            } else {
+                                addAssistantMessage("❌ $errorMsg")
+                            }
                         }
                         return
                     }
@@ -417,32 +504,55 @@ class MainActivity : AppCompatActivity() {
                             var line: String? = reader.readLine()
                             while (line != null) {
                                 if (line.startsWith("data: ")) {
+                                    hasReceivedData = true
                                     val jsonData = line.substring(6)
                                     try {
                                         val streamResponse = gson.fromJson(jsonData, StreamResponse::class.java)
                                         
                                         runOnUiThread {
                                             if (streamResponse.error != null) {
-                                                if (assistantMessageIndex == -1) {
-                                                    addAssistantMessage("错误: ${streamResponse.error}")
+                                                if (assistantMainMessageIndex >= 0) {
+                                                    updateAssistantMessage(assistantMainMessageIndex, "❌ 错误: ${streamResponse.error}")
                                                 } else {
-                                                    updateAssistantMessage(assistantMessageIndex, "错误: ${streamResponse.error}")
+                                                    addAssistantMessage("❌ 错误: ${streamResponse.error}")
                                                 }
                                                 return@runOnUiThread
                                             }
                                             
+                                            // 1. 处理思考片段
+                                            if (streamResponse.thinking.isNotEmpty()) {
+                                                fullThinking.append(streamResponse.thinking)
+                                                
+                                                // 只有当开关打开时才在界面上显示思考消息气泡
+                                                if (showThinkingDuringStream) {
+                                                    if (thinkingDisplayIndex == -1) {
+                                                        // 在助手主消息前插入思考消息
+                                                        messages.add(assistantMainMessageIndex, ChatMessage("thinking", "🤔 " + fullThinking.toString()))
+                                                        thinkingDisplayIndex = assistantMainMessageIndex
+                                                        // 现在助手主消息的索引往后移了一位
+                                                        assistantMainMessageIndex++
+                                                        adapter.notifyItemInserted(thinkingDisplayIndex)
+                                                    } else {
+                                                        messages[thinkingDisplayIndex] = ChatMessage("thinking", "🤔 " + fullThinking.toString())
+                                                        adapter.notifyItemChanged(thinkingDisplayIndex)
+                                                    }
+                                                    recyclerView.scrollToPosition(thinkingDisplayIndex)
+                                                }
+                                            }
+                                            
+                                            // 2. 处理正式内容片段
                                             if (streamResponse.content.isNotEmpty()) {
                                                 fullContent.append(streamResponse.content)
                                                 
-                                                if (assistantMessageIndex == -1) {
-                                                    messages.add(ChatMessage("assistant", streamResponse.content))
-                                                    assistantMessageIndex = messages.size - 1
-                                                    adapter.notifyItemInserted(assistantMessageIndex)
-                                                } else {
-                                                    messages[assistantMessageIndex] = ChatMessage("assistant", fullContent.toString())
-                                                    adapter.notifyItemChanged(assistantMessageIndex)
+                                                // 不再移除思考气泡！思考内容一直完整显示给用户
+                                                // 思考气泡永久保留在消息列表中
+                                                
+                                                // 更新助手主消息内容，同时带上完整的思考过程保存到本地
+                                                if (assistantMainMessageIndex >= 0) {
+                                                    messages[assistantMainMessageIndex] = ChatMessage("assistant", fullContent.toString(), fullThinking.toString())
+                                                    adapter.notifyItemChanged(assistantMainMessageIndex)
                                                 }
-                                                recyclerView.scrollToPosition(assistantMessageIndex)
+                                                recyclerView.scrollToPosition(assistantMainMessageIndex)
                                             }
                                             
                                             if (streamResponse.done) {
@@ -450,8 +560,10 @@ class MainActivity : AppCompatActivity() {
                                                     currentConvId = streamResponse.convId
                                                 }
                                                 
-                                                if (assistantMessageIndex == -1 && fullContent.isEmpty()) {
-                                                    addAssistantMessage("收到空响应")
+                                                // 无论什么情况，最终主消息里都要完整保存思考内容
+                                                if (assistantMainMessageIndex >= 0) {
+                                                    messages[assistantMainMessageIndex] = ChatMessage("assistant", fullContent.toString(), fullThinking.toString())
+                                                    adapter.notifyItemChanged(assistantMainMessageIndex)
                                                 }
                                             }
                                         }
@@ -461,10 +573,20 @@ class MainActivity : AppCompatActivity() {
                                 }
                                 line = reader.readLine()
                             }
+                            
+                            if (!hasReceivedData) {
+                                runOnUiThread {
+                                    addAssistantMessage("未收到有效响应数据")
+                                }
+                            }
                         }
                     } catch (e: Exception) {
                         runOnUiThread {
-                            addAssistantMessage("解析响应失败: ${e.message}")
+                            val errorMessage = when {
+                                e.message?.contains("timeout", ignoreCase = true) == true -> "读取响应超时"
+                                else -> "解析响应失败: ${e.message}"
+                            }
+                            addAssistantMessage(errorMessage)
                         }
                     }
                 }
@@ -474,7 +596,8 @@ class MainActivity : AppCompatActivity() {
 
     private fun updateAssistantMessage(index: Int, content: String) {
         if (index >= 0 && index < messages.size) {
-            messages[index] = ChatMessage("assistant", content)
+            val originalThinking = messages[index].thinking
+            messages[index] = ChatMessage("assistant", content, originalThinking)
             adapter.notifyItemChanged(index)
         }
     }

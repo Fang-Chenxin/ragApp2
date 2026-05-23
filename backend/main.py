@@ -99,13 +99,12 @@ async def health_check():
 if __name__ == "__main__":
     import uvicorn
 
-    # 确保数据目录存在
     os.makedirs(settings.chroma_path, exist_ok=True)
 
-    # 运行服务
     uvicorn.run(
         app,
         host=settings.server_host,
         port=settings.server_port,
-        log_level="info"
+        log_level="info",
+        timeout_keep_alive=120,
     )

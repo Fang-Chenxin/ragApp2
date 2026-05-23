@@ -35,7 +35,23 @@
             android:layout_width="match_parent"
             android:layout_height="0dp"
             android:layout_weight="1"
-            android:paddingBottom="16dp" />
+            android:paddingBottom="8dp" />
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="horizontal"
+            android:gravity="center_vertical"
+            android:paddingBottom="8dp">
+            
+            <Switch
+                android:id="@+id/thinkingSwitch"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="显示思考过程"
+                android:textSize="14sp"
+                android:textColor="#666666" />
+        </LinearLayout>
 
         <LinearLayout
             android:layout_width="match_parent"

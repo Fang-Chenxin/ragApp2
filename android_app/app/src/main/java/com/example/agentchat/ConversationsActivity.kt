@@ -49,7 +49,7 @@ class ConversationsActivity : AppCompatActivity() {
     private val gson = Gson()
     
     companion object {
-        private const val BACKEND_URL = "http://192.168.8.105:8000"
+        private const val BACKEND_URL = "http://192.168.1.106:8000"
         const val EXTRA_USER_ID = "user_id"
         const val EXTRA_CURRENT_CONV = "current_conv"
         

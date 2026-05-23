@@ -191,7 +191,7 @@ class RAGService:
         # 3. 构建消息列表
         messages = [{"role": "system", "content": system_prompt}]
 
-        # 添加对话历史
+        # 添加对话历史，完全剥离thinking字段，仅保留role和content，绝对不让思考内容混入LLM的记忆
         if conversation_history:
             for msg in conversation_history:
                 messages.append({"role": msg["role"], "content": msg["content"]})
@@ -241,6 +241,40 @@ class RAGService:
 
         # 4. 流式调用 LLM 生成回复
         async for chunk in self.llm.chat_stream(messages):
+            yield chunk
+
+    async def chat_with_rag_stream_with_thinking(
+        self,
+        user_query: str,
+        conversation_history: Optional[List[Dict[str, str]]] = None
+    ) -> AsyncGenerator[Dict[str, str], None]:
+        """使用 RAG 进行流式对话，包含思考过程
+
+        Args:
+            user_query: 用户问题
+            conversation_history: 对话历史
+
+        Yields:
+            Dict包含 "thinking" 或 "content" 键
+        """
+        context_docs = self.vector_store.query(user_query)
+        context_text = "\n".join([str(doc) for doc in context_docs])
+
+        system_prompt = f"""你是一个智能Agent对话助手。
+参考知识库内容：
+{context_text}
+
+请基于以上知识库内容和用户进行友好对话，如果知识库中没有相关内容就正常回答用户问题。"""
+
+        messages = [{"role": "system", "content": system_prompt}]
+
+        if conversation_history:
+            for msg in conversation_history:
+                messages.append({"role": msg["role"], "content": msg["content"]})
+
+        messages.append({"role": "user", "content": user_query})
+
+        async for chunk in self.llm.chat_stream_with_thinking(messages):
             yield chunk
 
 

@@ -217,7 +217,7 @@ class HistoryService:
                 return True
         return False
 
-    def save_message(self, user_id: str, conv_id: str, role: str, content: str):
+    def save_message(self, user_id: str, conv_id: str, role: str, content: str, thinking: Optional[str] = None):
         """保存单条消息
 
         Args:
@@ -225,6 +225,7 @@ class HistoryService:
             conv_id: 会话ID
             role: 消息角色 (user/assistant)
             content: 消息内容
+            thinking: 思考过程内容（可选）
         """
         file_path = self._get_conv_file(user_id, conv_id)
 
@@ -232,11 +233,17 @@ class HistoryService:
         history = self.load_history(user_id, conv_id)
 
         # 添加新消息
-        history.append({
+        message = {
             "role": role,
             "content": content,
             "timestamp": datetime.now().isoformat()
-        })
+        }
+        if thinking:
+            # 双重清洗：去除思考过程前后的空白换行，避免无意义的 \n 残留
+            cleaned = thinking.strip()
+            if cleaned:
+                message["thinking"] = cleaned
+        history.append(message)
 
         # 写入文件
         with open(file_path, 'w', encoding='utf-8') as f:
