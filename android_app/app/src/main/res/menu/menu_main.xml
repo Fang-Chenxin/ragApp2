@@ -14,4 +14,10 @@
         android:icon="@drawable/ic_delete"
         app:showAsAction="ifRoom" />
 
+    <item
+        android:id="@+id/action_settings"
+        android:title="服务器设置"
+        android:icon="@drawable/ic_settings"
+        app:showAsAction="ifRoom" />
+
 </menu>

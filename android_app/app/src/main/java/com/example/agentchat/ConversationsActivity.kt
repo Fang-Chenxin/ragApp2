@@ -49,7 +49,6 @@ class ConversationsActivity : AppCompatActivity() {
     private val gson = Gson()
     
     companion object {
-        private const val BACKEND_URL = "http://192.168.1.106:8000"
         const val EXTRA_USER_ID = "user_id"
         const val EXTRA_CURRENT_CONV = "current_conv"
         
@@ -60,6 +59,14 @@ class ConversationsActivity : AppCompatActivity() {
             }
             context.startActivity(intent)
         }
+    }
+
+    private fun getBackendUrl(): String {
+        return ConfigManager.getBackendUrl(this)
+    }
+
+    private fun getBackendUrlWithPath(path: String): String {
+        return "${getBackendUrl()}$path"
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -98,7 +105,7 @@ class ConversationsActivity : AppCompatActivity() {
     }
     
     private fun loadConversations() {
-        val url = "$BACKEND_URL/api/conversations/$userId"
+        val url = getBackendUrlWithPath("/api/conversations/$userId")
         val request = Request.Builder()
             .url(url)
             .get()
@@ -154,7 +161,7 @@ class ConversationsActivity : AppCompatActivity() {
             return
         }
         
-        val url = "$BACKEND_URL/api/conversations/$userId"
+        val url = getBackendUrlWithPath("/api/conversations/$userId")
         val requestBody = "{}".toRequestBody("application/json".toMediaType())
         val request = Request.Builder()
             .url(url)
@@ -205,7 +212,7 @@ class ConversationsActivity : AppCompatActivity() {
     }
     
     private fun deleteEmptyConversation(convId: String, targetConv: Conversation) {
-        val url = "$BACKEND_URL/api/conversations/$userId/$convId"
+        val url = getBackendUrlWithPath("/api/conversations/$userId/$convId")
         val request = Request.Builder()
             .url(url)
             .delete()
@@ -236,7 +243,7 @@ class ConversationsActivity : AppCompatActivity() {
     
     private fun switchToConversation(conv: Conversation) {
         // 切换到选中的会话
-        val url = "$BACKEND_URL/api/conversations/$userId/switch/${conv.convId}"
+        val url = getBackendUrlWithPath("/api/conversations/$userId/switch/${conv.convId}")
         val request = Request.Builder()
             .url(url)
             .post("{}".toRequestBody("application/json".toMediaType()))
@@ -267,7 +274,7 @@ class ConversationsActivity : AppCompatActivity() {
     }
     
     fun deleteConversation(convId: String, position: Int) {
-        val url = "$BACKEND_URL/api/conversations/$userId/$convId"
+        val url = getBackendUrlWithPath("/api/conversations/$userId/$convId")
         val request = Request.Builder()
             .url(url)
             .delete()

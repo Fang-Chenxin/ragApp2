@@ -82,13 +82,19 @@ class MainActivity : AppCompatActivity() {
     private var currentConvTitle: String = "智能助手"
 
     companion object {
-        private const val BACKEND_URL = "http://192.168.1.106:8000"
         private const val PREFS_NAME = "chat_prefs"
         private const val KEY_USER_ID = "user_id"
         private const val KEY_INCLUDE_THINKING = "include_thinking"
         private const val REQUEST_CONVERSATION = 1001
-        
-        // private const val BACKEND_URL = "http://10.0.2.2:8000"  // 模拟器访问本机
+        private const val REQUEST_CONFIG = 1002
+    }
+
+    private fun getBackendUrl(): String {
+        return ConfigManager.getBackendUrl(this)
+    }
+    
+    private fun getBackendUrlWithPath(path: String): String {
+        return "${getBackendUrl()}$path"
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -167,8 +173,41 @@ class MainActivity : AppCompatActivity() {
                 showClearHistoryDialog()
                 true
             }
+            R.id.action_settings -> {
+                showServerConfigDialog()
+                true
+            }
             else -> super.onOptionsItemSelected(item)
         }
+    }
+
+    /**
+     * 显示服务器地址配置对话框
+     */
+    private fun showServerConfigDialog() {
+        val editText = EditText(this).apply {
+            hint = "例如: http://192.168.1.106:8000"
+            setText(getBackendUrl())
+            setPadding(48, 32, 48, 32)
+        }
+        
+        AlertDialog.Builder(this)
+            .setTitle("服务器地址设置")
+            .setMessage("请输入后端服务器的地址")
+            .setView(editText)
+            .setPositiveButton("保存") { _, _ ->
+                val url = editText.text.toString().trim()
+                if (url.isNotEmpty()) {
+                    if (!url.startsWith("http://") && !url.startsWith("https://")) {
+                        Toast.makeText(this, "URL必须以http://或https://开头", Toast.LENGTH_SHORT).show()
+                        return@setPositiveButton
+                    }
+                    ConfigManager.setBackendUrl(this, url)
+                    Toast.makeText(this, "服务器地址已保存", Toast.LENGTH_SHORT).show()
+                }
+            }
+            .setNegativeButton("取消", null)
+            .show()
     }
     
     /**
@@ -221,7 +260,7 @@ class MainActivity : AppCompatActivity() {
         }
         
         // 当前会话有消息，创建新会话
-        val url = "$BACKEND_URL/api/conversations/$userId"
+        val url = getBackendUrlWithPath("/api/conversations/$userId")
         val requestBody = "{}".toRequestBody("application/json".toMediaType())
         val request = Request.Builder()
             .url(url)
@@ -279,7 +318,7 @@ class MainActivity : AppCompatActivity() {
      * 清除服务器上的当前会话历史
      */
     private fun clearHistoryOnServer() {
-        var url = "$BACKEND_URL/api/history/$userId"
+        var url = getBackendUrlWithPath("/api/history/$userId")
         if (currentConvId != null) {
             url += "?conv_id=$currentConvId"
         }
@@ -351,7 +390,7 @@ class MainActivity : AppCompatActivity() {
     }
     
     private fun loadHistoryFromServer() {
-        var url = "$BACKEND_URL/api/history/$userId"
+        var url = getBackendUrlWithPath("/api/history/$userId")
         if (currentConvId != null) {
             url += "?conv_id=$currentConvId"
         }
@@ -437,7 +476,7 @@ class MainActivity : AppCompatActivity() {
         val mediaType = "application/json; charset=utf-8".toMediaType()
         val body = requestBodyJson.toRequestBody(mediaType)
         val request = Request.Builder()
-            .url("$BACKEND_URL/api/chat/stream")
+            .url(getBackendUrlWithPath("/api/chat/stream"))
             .post(body)
             .build()
 
