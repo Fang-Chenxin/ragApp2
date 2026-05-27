@@ -10,12 +10,16 @@ import sys
 
 # 添加项目路径
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+# 添加项目根目录，使 ecommerce_agent_dataset 可作为正式包导入
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from config.settings import settings
 from service.llm_service import llm_service
 from service.rag_service import initialize_services, cleanup_services
+from service.ecommerce_service import ecommerce_service
 from api.chat import router as chat_router
 from api.knowledge import router as knowledge_router
+from api.ecommerce import router as ecommerce_router
 
 
 @asynccontextmanager
@@ -30,6 +34,7 @@ async def lifespan(app: FastAPI):
     # 初始化服务
     try:
         initialize_services()
+        ecommerce_service.initialize()
         print("✅ 服务启动成功")
     except Exception as e:
         print(f"❌ 服务启动失败: {e}")
@@ -40,6 +45,7 @@ async def lifespan(app: FastAPI):
     # 清理资源
     print("🛑 正在关闭服务...")
     cleanup_services()
+    ecommerce_service.close()
     print("✅ 服务已关闭")
 
 
@@ -64,6 +70,7 @@ app.add_middleware(
 # 注册路由
 app.include_router(chat_router)
 app.include_router(knowledge_router)
+app.include_router(ecommerce_router)
 
 
 @app.get("/")

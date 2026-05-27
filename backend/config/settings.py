@@ -20,6 +20,9 @@ class Settings(BaseSettings):
     chroma_path: str = "./data/chroma"
     chroma_collection_name: str = "agent_knowledge"
 
+    # 电商数据库配置
+    ecommerce_db_path: str = "../ecommerce_agent_dataset/ecommerce.db"
+
     # 服务器配置
     server_host: str = "0.0.0.0"
     server_port: int = 8000

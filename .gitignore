@@ -46,3 +46,11 @@ Thumbs.db
 # 临时文件
 *.tmp
 *.temp
+
+# ecommerce_agent_dataset 生成文件
+ecommerce_agent_dataset/.chroma/
+ecommerce_agent_dataset/ecommerce.db
+ecommerce_agent_dataset/1_美妆护肤/
+ecommerce_agent_dataset/2_数码电子/
+ecommerce_agent_dataset/3_服饰运动/
+ecommerce_agent_dataset/4_食品饮料/
