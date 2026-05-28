@@ -6,6 +6,9 @@ from typing import List, Dict, Optional
 from datetime import datetime
 from config.settings import settings
 
+# 基于本文件位置计算 backend 目录，确保路径不依赖 CWD
+_BACKEND_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
 
 class ConversationInfo:
     """会话信息"""
@@ -21,7 +24,7 @@ class HistoryService:
     """对话历史服务 - 支持多会话管理"""
 
     def __init__(self):
-        self.storage_path = "./data/history"
+        self.storage_path = os.path.join(_BACKEND_DIR, "data", "history")
         self._ensure_storage_dir()
 
     def _ensure_storage_dir(self):

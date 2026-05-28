@@ -68,6 +68,7 @@ class MainActivity : AppCompatActivity() {
     private lateinit var recyclerView: RecyclerView
     private lateinit var editText: EditText
     private lateinit var thinkingSwitch: android.widget.Switch
+    private lateinit var requestThinkingSwitch: android.widget.Switch
     
     private val client = OkHttpClient.Builder()
         .connectTimeout(30, java.util.concurrent.TimeUnit.SECONDS)
@@ -86,6 +87,7 @@ class MainActivity : AppCompatActivity() {
         private const val PREFS_NAME = "chat_prefs"
         private const val KEY_USER_ID = "user_id"
         private const val KEY_INCLUDE_THINKING = "include_thinking"
+        private const val KEY_REQUEST_THINKING = "request_thinking"
         private const val REQUEST_CONVERSATION = 1001
         private const val REQUEST_CONFIG = 1002
     }
@@ -115,6 +117,7 @@ class MainActivity : AppCompatActivity() {
         recyclerView = findViewById(R.id.chatRecyclerView)
         editText = findViewById(R.id.messageEditText)
         thinkingSwitch = findViewById(R.id.thinkingSwitch)
+        requestThinkingSwitch = findViewById(R.id.requestThinkingSwitch)
         val sendButton = findViewById<Button>(R.id.sendButton)
 
         adapter = ChatAdapter(messages)
@@ -127,6 +130,12 @@ class MainActivity : AppCompatActivity() {
             prefs.edit().putBoolean(KEY_INCLUDE_THINKING, isChecked).apply()
             // 切换开关时，重新刷新历史记录以正确显示/隐藏思考过程
             reloadHistoryWithCurrentThinkingState()
+        }
+
+        // 读取保存的“请求思考”开关状态
+        requestThinkingSwitch.isChecked = prefs.getBoolean(KEY_REQUEST_THINKING, true)
+        requestThinkingSwitch.setOnCheckedChangeListener { _, isChecked ->
+            prefs.edit().putBoolean(KEY_REQUEST_THINKING, isChecked).apply()
         }
         
         // 应用启动时加载历史记录
@@ -471,8 +480,9 @@ class MainActivity : AppCompatActivity() {
             .map { ChatMessage(it.role, it.content, null) }  // 强制把thinking置空，结构纯净化
 
         val showThinkingDuringStream = thinkingSwitch.isChecked
+        val requestThinking = requestThinkingSwitch.isChecked
         val requestBodyJson = gson.toJson(
-            ChatRequest(cleanedPreviousMessages, lastUserMessage.content, userId, currentConvId, showThinkingDuringStream)
+            ChatRequest(cleanedPreviousMessages, lastUserMessage.content, userId, currentConvId, requestThinking)
         )
         val mediaType = "application/json; charset=utf-8".toMediaType()
         val body = requestBodyJson.toRequestBody(mediaType)

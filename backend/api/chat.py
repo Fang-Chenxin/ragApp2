@@ -183,15 +183,17 @@ async def chat_stream_endpoint(request: ChatRequest):
 
         async def generate_stream():
             full_reply = ""
+            full_thinking = ""
             timings = None
             try:
                 # 使用带工具调用的流式服务（自动触发 SQLite 商品数据库搜索）
                 async for chunk in tool_chat_service.chat_with_tools_stream(
                     user_query=request.user_query,
-                    conversation_history=history
+                    conversation_history=history,
+                    include_thinking=bool(request.include_thinking),
                 ):
                     chunk_type = chunk.get("type")
-                    
+
                     if chunk_type == "content":
                         # 流式返回内容片段
                         content = chunk.get("content", "")
@@ -202,27 +204,43 @@ async def chat_stream_endpoint(request: ChatRequest):
                             "done": False
                         }
                         yield f"data: {json.dumps(data, ensure_ascii=False)}\n\n"
-                    
+
+                    elif chunk_type == "thinking":
+                        # 实时推送思考片段
+                        thinking_content = chunk.get("content", "")
+                        if thinking_content:
+                            full_thinking += thinking_content
+                        data = {
+                            "thinking": thinking_content,
+                            "conv_id": current_conv_id,
+                            "done": False
+                        }
+                        yield f"data: {json.dumps(data, ensure_ascii=False)}\n\n"
+
                     elif chunk_type == "done":
                         # 流式响应完成，获取耗时信息
                         timings = chunk.get("timings")
-                        
+
                         # 服务端打印耗时日志
                         if timings:
                             print(f"[Timings] user={request.user_id} | 向量检索={timings.get('vector_search', '-')}s | "
                                   f"LLM推理={timings.get('llm_calls', '-')}s({timings.get('llm_rounds', '?')}轮) | "
                                   f"SQLite 工具查询={timings.get('tool_calls', '-')}s({timings.get('tool_rounds', '?')}轮) | "
                                   f"总计={timings.get('total', '-')}s")
-                        
-                        # 保存对话历史
+
+                        # 保存对话历史（包含可能的思考内容）
                         try:
                             history_service.save_message(request.user_id, current_conv_id, "user", request.user_query)
-                            history_service.save_message(request.user_id, current_conv_id, "assistant", full_reply)
+                            # 仅在有思考内容时传递 thinking 字段
+                            if full_thinking.strip():
+                                history_service.save_message(request.user_id, current_conv_id, "assistant", full_reply, thinking=full_thinking)
+                            else:
+                                history_service.save_message(request.user_id, current_conv_id, "assistant", full_reply)
                             history_saved = True
                         except Exception as e:
                             print(f"保存对话历史失败: {e}")
                             history_saved = False
-                        
+
                         # 发送完成标记
                         data = {
                             "content": "",
@@ -232,7 +250,8 @@ async def chat_stream_endpoint(request: ChatRequest):
                             "done": True
                         }
                         yield f"data: {json.dumps(data, ensure_ascii=False)}\n\n"
-                    
+                        return
+
                     elif chunk_type == "error":
                         # 发生错误
                         error_content = chunk.get("content", "未知错误")
@@ -242,7 +261,7 @@ async def chat_stream_endpoint(request: ChatRequest):
                         }
                         yield f"data: {json.dumps(error_data, ensure_ascii=False)}\n\n"
                         return
-                
+
             except Exception as e:
                 error_data = {
                     "error": str(e),

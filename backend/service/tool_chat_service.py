@@ -247,7 +247,8 @@ class ToolChatService:
         self,
         user_query: str,
         conversation_history: Optional[List[Dict[str, str]]] = None,
-        max_tool_calls: int = 5
+        max_tool_calls: int = 5,
+        include_thinking: bool = False,
     ) -> AsyncGenerator[Dict[str, Any], None]:
         """使用原生 function calling 进行对话，流式返回结果"""
         timings: Dict[str, Any] = {}
@@ -383,12 +384,24 @@ class ToolChatService:
                 timings["tool_calls"] = round(tool_call_total, 3)
                 timings["tool_rounds"] = tool_rounds
 
-                async for chunk in self.llm.chat_stream(messages[:-1] + [{"role": "user", "content": user_query}]):
-                    yield {
-                        "type": "content",
-                        "content": chunk,
-                        "timings": None,
-                    }
+                # 根据 include_thinking 决定使用带/不带思考输出的流接口
+                if include_thinking and hasattr(self.llm, 'chat_stream_with_thinking'):
+                    async for chunk in self.llm.chat_stream_with_thinking(messages[:-1] + [{"role": "user", "content": user_query}]):
+                        # chunk 可能是 dict({"thinking":...}) 或 {"content":...} 或纯字符串
+                        if isinstance(chunk, dict):
+                            if 'thinking' in chunk and chunk['thinking']:
+                                yield {"type": "thinking", "content": chunk['thinking'], "timings": None}
+                            elif 'content' in chunk and chunk['content']:
+                                yield {"type": "content", "content": chunk['content'], "timings": None}
+                        else:
+                            yield {"type": "content", "content": chunk, "timings": None}
+                else:
+                    async for chunk in self.llm.chat_stream(messages[:-1] + [{"role": "user", "content": user_query}]):
+                        yield {
+                            "type": "content",
+                            "content": chunk,
+                            "timings": None,
+                        }
 
                 timings["total"] = round(time.perf_counter() - t_total_start, 3)
                 self._print_timings_summary(timings)
@@ -453,12 +466,23 @@ class ToolChatService:
         timings["tool_rounds"] = tool_rounds
 
         try:
-            async for chunk in self.llm.chat_stream(messages):
-                yield {
-                    "type": "content",
-                    "content": chunk,
-                    "timings": None,
-                }
+            # 最终流式返回：若需要思考输出则调用 chat_stream_with_thinking
+            if include_thinking and hasattr(self.llm, 'chat_stream_with_thinking'):
+                async for chunk in self.llm.chat_stream_with_thinking(messages):
+                    if isinstance(chunk, dict):
+                        if 'thinking' in chunk and chunk['thinking']:
+                            yield {"type": "thinking", "content": chunk['thinking'], "timings": None}
+                        elif 'content' in chunk and chunk['content']:
+                            yield {"type": "content", "content": chunk['content'], "timings": None}
+                    else:
+                        yield {"type": "content", "content": chunk, "timings": None}
+            else:
+                async for chunk in self.llm.chat_stream(messages):
+                    yield {
+                        "type": "content",
+                        "content": chunk,
+                        "timings": None,
+                    }
             elapsed = round(time.perf_counter() - t3, 3)
             print(f"      LLM 流式响应完成 | 耗时: {elapsed}s")
         except Exception as e:

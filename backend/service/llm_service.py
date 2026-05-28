@@ -59,6 +59,22 @@ class LLMService:
             return "******"
         return f"{api_key[:4]}******{api_key[-4:]}"
 
+    @staticmethod
+    def _apply_thinking_params(
+        kwargs: Dict[str, Any],
+        thinking_type: Optional[str] = None,
+        reasoning_effort: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """为 Chat API 请求补充深度思考参数"""
+        extra_body = dict(kwargs.get("extra_body") or {})
+        if thinking_type:
+            extra_body["thinking"] = {"type": thinking_type}
+        if reasoning_effort:
+            extra_body["reasoning_effort"] = reasoning_effort
+        if extra_body:
+            kwargs["extra_body"] = extra_body
+        return kwargs
+
     async def chat(
         self,
         messages: List[Dict[str, str]],
@@ -92,6 +108,8 @@ class LLMService:
         tools: Optional[List[Dict[str, Any]]] = None,
         tool_choice: str = "auto",
         temperature: Optional[float] = None,
+        thinking_type: Optional[str] = "enabled",
+        reasoning_effort: Optional[str] = "medium",
     ) -> Any:
         """调用大模型，支持原生 function calling
 
@@ -117,6 +135,8 @@ class LLMService:
         if tools:
             kwargs["tools"] = tools
             kwargs["tool_choice"] = tool_choice
+
+        self._apply_thinking_params(kwargs, thinking_type, reasoning_effort)
 
         return await self.client.chat.completions.create(**kwargs)
 
@@ -153,7 +173,9 @@ class LLMService:
     async def chat_stream_with_thinking(
         self,
         messages: List[Dict[str, str]],
-        temperature: Optional[float] = None
+        temperature: Optional[float] = None,
+        thinking_type: Optional[str] = "enabled",
+        reasoning_effort: Optional[str] = "medium",
     ) -> AsyncGenerator[Dict[str, str], None]:
         """流式调用大模型生成回复，包含思考过程
 
@@ -169,12 +191,15 @@ class LLMService:
 
         temp = temperature or settings.rag_temperature
 
-        stream = await self.client.chat.completions.create(
-            model=self.model,
-            messages=messages,
-            temperature=temp,
-            stream=True
-        )
+        stream_kwargs: Dict[str, Any] = {
+            "model": self.model,
+            "messages": messages,
+            "temperature": temp,
+            "stream": True,
+        }
+        self._apply_thinking_params(stream_kwargs, thinking_type, reasoning_effort)
+
+        stream = await self.client.chat.completions.create(**stream_kwargs)
 
         async for chunk in stream:
             delta = chunk.choices[0].delta

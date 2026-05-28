@@ -9,7 +9,8 @@ payload = {
     "messages": [],
     "user_query": "你好，请介绍一下自己",
     "user_id": "test_user",
-    "conv_id": None
+    "conv_id": None,
+    "include_thinking": True
 }
 
 print("发送流式聊天请求...")
