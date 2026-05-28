@@ -7,7 +7,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from config.settings import settings
-from service.ecommerce_service import ecommerce_service
+from service import ecommerce_service
 
 
 async def test_ecommerce_service():

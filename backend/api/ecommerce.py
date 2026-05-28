@@ -49,7 +49,7 @@ async def search_by_text(
         查询结果
     """
     try:
-        from service.ecommerce_service import ecommerce_service
+        from service import ecommerce_service
         
         result = ecommerce_service.search_from_text(text=text, limit=limit, show_skus=show_skus)
         
@@ -78,7 +78,7 @@ async def search_products(request: ProductSearchRequest):
         查询结果
     """
     try:
-        from service.ecommerce_service import ecommerce_service
+        from service import ecommerce_service
         
         result = ecommerce_service.search_products(
             keyword=request.keyword,
@@ -129,7 +129,7 @@ async def search_products_get(
         查询结果
     """
     try:
-        from service.ecommerce_service import ecommerce_service
+        from service import ecommerce_service
         
         attr_filters = []
         if attr_key and attr_value:
@@ -168,7 +168,7 @@ async def get_tool_spec():
         工具调用规范
     """
     try:
-        from service.ecommerce_service import ecommerce_service
+        from service import ecommerce_service
         
         return ecommerce_service.get_tool_spec()
         
@@ -192,7 +192,7 @@ async def run_tool(request: ToolCallRequest):
         工具执行结果
     """
     try:
-        from service.ecommerce_service import ecommerce_service
+        from service import ecommerce_service
         
         result = ecommerce_service.run_tool(
             tool_name=request.tool_name,
@@ -216,7 +216,7 @@ async def health_check():
         服务状态信息
     """
     try:
-        from service.ecommerce_service import ecommerce_service
+        from service import ecommerce_service
         
         return {
             "status": "healthy",

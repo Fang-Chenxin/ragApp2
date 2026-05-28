@@ -13,11 +13,15 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import sys
+from pathlib import Path
 from typing import Any
 
 from openai import APIConnectionError, APITimeoutError, OpenAI
 
-from query_sqlite_with_synonyms import agent_search_from_text, agent_search_products
+# 添加后端路径以导入查询引擎
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "backend"))
+from service.query_engine import agent_search_from_text, agent_search_products
 
 TOOL_NAME = "query_products"
 TOOL_SPEC: dict[str, Any] = {

@@ -2,7 +2,7 @@
 from fastapi import APIRouter, HTTPException, Header
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
-from typing import List, Optional
+from typing import List, Optional, Dict, Any
 import json
 
 router = APIRouter(prefix="/api", tags=["chat"])
@@ -28,6 +28,7 @@ class ChatResponse(BaseModel):
     reply: str
     history_saved: bool = True  # 标记历史是否保存成功
     conv_id: Optional[str] = None  # 当前会话ID
+    timings: Optional[Dict[str, Any]] = None  # 各环节耗时（秒）
 
 
 class ConversationInfo(BaseModel):
@@ -53,10 +54,8 @@ async def chat_endpoint(request: ChatRequest):
         HTTPException: 处理过程中的错误
     """
     try:
-        # 在运行时动态导入服务模块（避免模块加载时服务未初始化的问题）
-        from service.rag_service import rag_service
-        from service.llm_service import llm_service
-        from service.history_service import history_service
+        # 在运行时动态导入服务（避免模块加载时服务未初始化的问题）
+        from service import rag_service, llm_service, history_service
         
         # 确保用户有会话
         current_conv_id = history_service.ensure_default_conversation(request.user_id)
@@ -93,11 +92,20 @@ async def chat_endpoint(request: ChatRequest):
             if msg.role != "system"
         ]
 
-        # 调用 RAG 服务
-        reply = await rag_service.chat_with_rag(
+        # 调用带工具调用的服务（自动触发商品数据库搜索）
+        result = await rag_service.chat_with_tools(
             user_query=request.user_query,
             conversation_history=history
         )
+        reply = result["reply"]
+        timings = result.get("timings")
+
+        # 服务端打印耗时日志
+        if timings:
+            print(f"[Timings] user={request.user_id} | 向量检索={timings.get('vector_search', '-')}s | "
+                  f"LLM推理={timings.get('llm_calls', '-')}s({timings.get('llm_rounds', '?')}轮) | "
+                  f"工具查询={timings.get('tool_calls', '-')}s({timings.get('tool_rounds', '?')}轮) | "
+                  f"总计={timings.get('total', '-')}s")
 
         # 保存对话历史
         try:
@@ -107,9 +115,9 @@ async def chat_endpoint(request: ChatRequest):
             history_service.save_message(request.user_id, current_conv_id, "assistant", reply)
         except Exception as e:
             print(f"保存对话历史失败: {e}")
-            return ChatResponse(reply=reply, history_saved=False, conv_id=current_conv_id)
+            return ChatResponse(reply=reply, history_saved=False, conv_id=current_conv_id, timings=timings)
 
-        return ChatResponse(reply=reply, history_saved=True, conv_id=current_conv_id)
+        return ChatResponse(reply=reply, history_saved=True, conv_id=current_conv_id, timings=timings)
 
     except Exception as e:
         error_msg = str(e)
@@ -131,9 +139,7 @@ async def chat_stream_endpoint(request: ChatRequest):
         HTTPException: 处理过程中的错误
     """
     try:
-        from service.rag_service import rag_service
-        from service.llm_service import llm_service
-        from service.history_service import history_service
+        from service import rag_service, llm_service, history_service
         
         current_conv_id = history_service.ensure_default_conversation(request.user_id)
         
@@ -177,53 +183,65 @@ async def chat_stream_endpoint(request: ChatRequest):
 
         async def generate_stream():
             full_reply = ""
-            full_thinking = ""
+            timings = None
             try:
-                # 无论开关状态，都调用带思考的接口，后台永久完整捕获并保存思考内容
-                async for chunk_data in rag_service.chat_with_rag_stream_with_thinking(
+                # 使用带工具调用的流式服务（自动触发商品数据库搜索）
+                async for chunk in rag_service.chat_with_tools_stream(
                     user_query=request.user_query,
                     conversation_history=history
                 ):
-                    if "thinking" in chunk_data:
-                        thinking_content = chunk_data["thinking"]
-                        full_thinking += thinking_content  # 后台永久累加完整思考内容
-                        # 只有当开关打开时，才向前端流式推送思考内容
-                        if request.include_thinking:
-                            data = {
-                                "thinking": thinking_content,
-                                "conv_id": current_conv_id,
-                                "done": False
-                            }
-                            yield f"data: {json.dumps(data, ensure_ascii=False)}\n\n"
-                    elif "content" in chunk_data:
-                        content = chunk_data["content"]
-                        if content:
-                            full_reply += content
-                            data = {
-                                "content": content,
-                                "conv_id": current_conv_id,
-                                "done": False
-                            }
-                            yield f"data: {json.dumps(data, ensure_ascii=False)}\n\n"
-                
-                try:
-                    history_service.save_message(request.user_id, current_conv_id, "user", request.user_query)
-                    # 保存前清洗：去除思考内容前后无意义的空白换行
-                    cleaned_thinking = full_thinking.strip()
-                    # 如果清洗后是空字符串，就直接不传thinking，避免存储空值
-                    history_service.save_message(request.user_id, current_conv_id, "assistant", full_reply, cleaned_thinking if cleaned_thinking else None)
-                    history_saved = True
-                except Exception as e:
-                    print(f"保存对话历史失败: {e}")
-                    history_saved = False
-                
-                data = {
-                    "content": "",
-                    "conv_id": current_conv_id,
-                    "history_saved": history_saved,
-                    "done": True
-                }
-                yield f"data: {json.dumps(data, ensure_ascii=False)}\n\n"
+                    chunk_type = chunk.get("type")
+                    
+                    if chunk_type == "content":
+                        # 流式返回内容片段
+                        content = chunk.get("content", "")
+                        full_reply += content
+                        data = {
+                            "content": content,
+                            "conv_id": current_conv_id,
+                            "done": False
+                        }
+                        yield f"data: {json.dumps(data, ensure_ascii=False)}\n\n"
+                    
+                    elif chunk_type == "done":
+                        # 流式响应完成，获取耗时信息
+                        timings = chunk.get("timings")
+                        
+                        # 服务端打印耗时日志
+                        if timings:
+                            print(f"[Timings] user={request.user_id} | 向量检索={timings.get('vector_search', '-')}s | "
+                                  f"LLM推理={timings.get('llm_calls', '-')}s({timings.get('llm_rounds', '?')}轮) | "
+                                  f"工具查询={timings.get('tool_calls', '-')}s({timings.get('tool_rounds', '?')}轮) | "
+                                  f"总计={timings.get('total', '-')}s")
+                        
+                        # 保存对话历史
+                        try:
+                            history_service.save_message(request.user_id, current_conv_id, "user", request.user_query)
+                            history_service.save_message(request.user_id, current_conv_id, "assistant", full_reply)
+                            history_saved = True
+                        except Exception as e:
+                            print(f"保存对话历史失败: {e}")
+                            history_saved = False
+                        
+                        # 发送完成标记
+                        data = {
+                            "content": "",
+                            "conv_id": current_conv_id,
+                            "history_saved": history_saved,
+                            "timings": timings,
+                            "done": True
+                        }
+                        yield f"data: {json.dumps(data, ensure_ascii=False)}\n\n"
+                    
+                    elif chunk_type == "error":
+                        # 发生错误
+                        error_content = chunk.get("content", "未知错误")
+                        error_data = {
+                            "error": error_content,
+                            "done": True
+                        }
+                        yield f"data: {json.dumps(error_data, ensure_ascii=False)}\n\n"
+                        return
                 
             except Exception as e:
                 error_data = {
@@ -259,7 +277,7 @@ async def create_conversation(user_id: str, title: Optional[str] = None):
         新创建的会话信息
     """
     try:
-        from service.history_service import history_service
+        from service import history_service
 
         conv_id = history_service.create_conversation(user_id, title)
         
@@ -292,7 +310,7 @@ async def get_conversations(user_id: str):
         会话列表
     """
     try:
-        from service.history_service import history_service
+        from service import history_service
 
         conversations = history_service.get_conversations(user_id)
         current_conv = history_service.get_current_conversation(user_id)
@@ -322,7 +340,7 @@ async def switch_conversation(user_id: str, conv_id: str):
         操作结果
     """
     try:
-        from service.history_service import history_service
+        from service import history_service
 
         success = history_service.switch_conversation(user_id, conv_id)
 
@@ -359,7 +377,7 @@ async def delete_conversation(user_id: str, conv_id: str):
         操作结果
     """
     try:
-        from service.history_service import history_service
+        from service import history_service
 
         success = history_service.delete_conversation(user_id, conv_id)
 
@@ -393,7 +411,7 @@ async def update_conversation_title(user_id: str, conv_id: str, title: str):
         操作结果
     """
     try:
-        from service.history_service import history_service
+        from service import history_service
 
         success = history_service.update_conversation_title(user_id, conv_id, title)
 
@@ -428,7 +446,7 @@ async def get_history(user_id: str, conv_id: Optional[str] = None, limit: Option
         消息历史列表
     """
     try:
-        from service.history_service import history_service
+        from service import history_service
 
         history = history_service.load_history(user_id, conv_id, limit)
         current_conv = conv_id if conv_id else history_service.get_current_conversation(user_id)
@@ -458,7 +476,7 @@ async def clear_history(user_id: str, conv_id: Optional[str] = None):
         操作结果
     """
     try:
-        from service.history_service import history_service
+        from service import history_service
 
         success = history_service.clear_history(user_id, conv_id)
         current_conv = conv_id if conv_id else history_service.get_current_conversation(user_id)
@@ -495,7 +513,7 @@ async def get_history_count(user_id: str, conv_id: Optional[str] = None):
         消息数量
     """
     try:
-        from service.history_service import history_service
+        from service import history_service
 
         count = history_service.get_history_count(user_id, conv_id)
         current_conv = conv_id if conv_id else history_service.get_current_conversation(user_id)

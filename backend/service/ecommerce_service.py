@@ -7,7 +7,7 @@ from typing import Any, Optional, List, Dict
 
 from config.settings import settings
 
-from ecommerce_agent_dataset.query_sqlite_with_synonyms import (
+from service.query_engine import (
     DEFAULT_DB_PATH,
     DEFAULT_ONTOLOGY_PATH,
     agent_search_from_text,
@@ -207,7 +207,7 @@ class EcommerceService:
         if not any([args.get("keyword"), args.get("brand"), args.get("category"), args.get("sub_category"), attr_filters]):
             return {
                 "ok": False,
-                "error": "query_products 需要提供 text 参数或至少一个结构化过滤器",
+                "error": "参数为空！你必须提供 text（自然语言查询）或至少一个过滤器(keyword/brand/category/sub_category/attr_filters)。请从用户问题和对话历史中提取商品关键词后重新调用。",
                 "query_sql": "",
                 "query_params": [],
                 "resolved_filters": {},

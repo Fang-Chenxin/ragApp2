@@ -26,7 +26,7 @@ import java.io.IOException
 import java.util.UUID
 
 
-data class ChatMessage(val role: String, val content: String, val thinking: String? = null)
+data class ChatMessage(val role: String, val content: String, val thinking: String? = null, val timings: Map<String, Any>? = null)
 data class ChatRequest(
     val messages: List<ChatMessage>,
     @SerializedName("user_query") val userQuery: String,
@@ -45,7 +45,8 @@ data class StreamResponse(
     @SerializedName("conv_id") val convId: String? = null,
     @SerializedName("history_saved") val historySaved: Boolean = true,
     val done: Boolean = false,
-    val error: String? = null
+    val error: String? = null,
+    val timings: Map<String, Any>? = null
 )
 data class HistoryResponse(
     val userId: String,
@@ -599,9 +600,9 @@ class MainActivity : AppCompatActivity() {
                                                     currentConvId = streamResponse.convId
                                                 }
                                                 
-                                                // 无论什么情况，最终主消息里都要完整保存思考内容
+                                                // 无论什么情况，最终主消息里都要完整保存思考内容和耗时数据
                                                 if (assistantMainMessageIndex >= 0) {
-                                                    messages[assistantMainMessageIndex] = ChatMessage("assistant", fullContent.toString(), fullThinking.toString())
+                                                    messages[assistantMainMessageIndex] = ChatMessage("assistant", fullContent.toString(), fullThinking.toString(), streamResponse.timings)
                                                     adapter.notifyItemChanged(assistantMainMessageIndex)
                                                 }
                                             }
@@ -636,7 +637,8 @@ class MainActivity : AppCompatActivity() {
     private fun updateAssistantMessage(index: Int, content: String) {
         if (index >= 0 && index < messages.size) {
             val originalThinking = messages[index].thinking
-            messages[index] = ChatMessage("assistant", content, originalThinking)
+            val originalTimings = messages[index].timings
+            messages[index] = ChatMessage("assistant", content, originalThinking, originalTimings)
             adapter.notifyItemChanged(index)
         }
     }

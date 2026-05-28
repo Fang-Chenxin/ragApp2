@@ -14,9 +14,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from config.settings import settings
-from service.llm_service import llm_service
-from service.rag_service import initialize_services, cleanup_services
-from service.ecommerce_service import ecommerce_service
+from service import initialize_services, cleanup_services, llm_service, vector_store
 from api.chat import router as chat_router
 from api.knowledge import router as knowledge_router
 from api.ecommerce import router as ecommerce_router
@@ -31,10 +29,9 @@ async def lifespan(app: FastAPI):
     """
     print("🚀 正在启动服务...")
 
-    # 初始化服务
+    # 初始化所有服务（LLM、Embedding、向量库、电商）
     try:
         initialize_services()
-        ecommerce_service.initialize()
         print("✅ 服务启动成功")
     except Exception as e:
         print(f"❌ 服务启动失败: {e}")
@@ -45,7 +42,6 @@ async def lifespan(app: FastAPI):
     # 清理资源
     print("🛑 正在关闭服务...")
     cleanup_services()
-    ecommerce_service.close()
     print("✅ 服务已关闭")
 
 
@@ -89,7 +85,6 @@ async def health_check():
 
     用于 Kubernetes/负载均衡器的健康探测
     """
-    from service.rag_service import vector_store
 
     return {
         "status": "healthy",

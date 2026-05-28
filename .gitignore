@@ -22,6 +22,7 @@ backend/*.log
 # IDE
 .idea/
 .vscode/
+.github/
 *.iml
 *.swp
 *.swo

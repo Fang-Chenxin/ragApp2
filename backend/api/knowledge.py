@@ -39,7 +39,7 @@ async def add_knowledge(request: AddKnowledgeRequest):
         HTTPException: 处理过程中的错误
     """
     try:
-        from service.rag_service import vector_store
+        from service import vector_store
 
         if not vector_store:
             raise HTTPException(
@@ -76,7 +76,7 @@ async def get_knowledge_stats():
         HTTPException: 处理过程中的错误
     """
     try:
-        from service.rag_service import vector_store
+        from service import vector_store
         from config.settings import settings
 
         if not vector_store:

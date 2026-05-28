@@ -44,7 +44,7 @@ class ChatAdapter(private val messages: List<ChatMessage>) : RecyclerView.Adapte
         val message = messages[position]
         when (holder) {
             is UserMessageViewHolder -> holder.bind(message.content)
-            is AssistantMessageViewHolder -> holder.bind(message.content)
+            is AssistantMessageViewHolder -> holder.bind(message.content, message.timings)
             is ThinkingMessageViewHolder -> holder.bind(message.content)
         }
     }
@@ -60,8 +60,23 @@ class ChatAdapter(private val messages: List<ChatMessage>) : RecyclerView.Adapte
 
     class AssistantMessageViewHolder(itemView: View) : RecyclerView.ViewHolder(itemView) {
         private val textView: TextView = itemView.findViewById(R.id.assistantMessageText)
-        fun bind(content: String) {
+        private val timingsText: TextView = itemView.findViewById(R.id.assistantTimingsText)
+        fun bind(content: String, timings: Map<String, Any>?) {
             textView.text = content
+            if (timings != null && timings.isNotEmpty()) {
+                timingsText.visibility = View.VISIBLE
+                val parts = mutableListOf<String>()
+                timings["vector_search"]?.let { parts.add("向量检索 ${it}s") }
+                timings["llm_calls"]?.let { parts.add("LLM推理 ${it}s") }
+                timings["tool_calls"]?.let { t ->
+                    val rounds = timings["tool_rounds"]
+                    if (rounds != null && (rounds as Number).toInt() > 0) parts.add("工具查询 ${t}s")
+                }
+                timings["total"]?.let { parts.add("总计 ${it}s") }
+                timingsText.text = parts.joinToString(" | ")
+            } else {
+                timingsText.visibility = View.GONE
+            }
         }
     }
 

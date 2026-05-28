@@ -31,9 +31,10 @@ import re
 from pathlib import Path
 from typing import Any
 
-ROOT_DIR = Path(__file__).resolve().parent
-DEFAULT_DB_PATH = ROOT_DIR / "ecommerce.db"
-DEFAULT_ONTOLOGY_PATH = ROOT_DIR / "attribute_ontology.json"
+# 数据文件位于 ecommerce_agent_dataset/ 目录
+_DATA_DIR = Path(__file__).resolve().parent.parent.parent / "ecommerce_agent_dataset"
+DEFAULT_DB_PATH = _DATA_DIR / "ecommerce.db"
+DEFAULT_ONTOLOGY_PATH = _DATA_DIR / "attribute_ontology.json"
 
 
 def load_ontology(ontology_path: Path) -> dict[str, Any]:

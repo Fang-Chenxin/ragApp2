@@ -1,4 +1,5 @@
 """配置管理模块"""
+import os
 from pydantic_settings import BaseSettings
 from typing import Optional
 
@@ -8,7 +9,8 @@ class Settings(BaseSettings):
 
     # LLM 配置 - 统一使用 LLM_API_KEY 命名，兼容多种模型
     llm_api_key: str = ""  # 空字符串表示未配置，避免明文默认值
-    llm_model: str = "ep-20260514111645-lmgt2"
+    # 标准模型 ID（doubao-xxx）或自定义接入点 ID（ep-xxx），需要在火山方舟控制台开通
+    llm_model: str = "doubao-seed-2-0-lite-260215"
     llm_base_url: str = "https://ark.cn-beijing.volces.com/api/v3"
 
     # Embedding 配置
@@ -40,7 +42,7 @@ class Settings(BaseSettings):
         return bool(self.llm_api_key and self.llm_api_key.strip())
 
     class Config:
-        env_file = ".env"
+        env_file = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), ".env")
         env_file_encoding = "utf-8"
         extra = "ignore"  # 忽略额外字段
 

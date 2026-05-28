@@ -10,11 +10,14 @@ from __future__ import annotations
 
 import argparse
 import json
+import sys
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from query_sqlite_with_synonyms import DEFAULT_DB_PATH, agent_search_from_text
+# 添加后端路径以导入查询引擎
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "backend"))
+from service.query_engine import DEFAULT_DB_PATH, agent_search_from_text
 
 
 @dataclass(frozen=True)

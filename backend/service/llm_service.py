@@ -1,6 +1,6 @@
 """LLM 服务层 - 封装大模型调用"""
 from openai import AsyncOpenAI
-from typing import Optional, Dict, List, AsyncGenerator
+from typing import Any, Optional, Dict, List, AsyncGenerator
 from config.settings import settings
 import httpx
 
@@ -85,6 +85,40 @@ class LLMService:
         )
 
         return response.choices[0].message.content or "抱歉，我现在无法回答您的问题。"
+
+    async def chat_with_tools(
+        self,
+        messages: List[Dict[str, str]],
+        tools: Optional[List[Dict[str, Any]]] = None,
+        tool_choice: str = "auto",
+        temperature: Optional[float] = None,
+    ) -> Any:
+        """调用大模型，支持原生 function calling
+
+        Args:
+            messages: 消息列表
+            tools: OpenAI 格式的工具定义列表
+            tool_choice: 工具选择策略 ("auto", "none", "required")
+            temperature: 温度参数
+
+        Returns:
+            完整的 ChatCompletion response 对象
+        """
+        if not self.client:
+            raise RuntimeError("LLM 客户端未初始化，请配置 LLM_API_KEY")
+
+        temp = temperature or settings.rag_temperature
+
+        kwargs: Dict[str, Any] = {
+            "model": self.model,
+            "messages": messages,
+            "temperature": temp,
+        }
+        if tools:
+            kwargs["tools"] = tools
+            kwargs["tool_choice"] = tool_choice
+
+        return await self.client.chat.completions.create(**kwargs)
 
     async def chat_stream(
         self,
