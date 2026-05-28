@@ -1,5 +1,38 @@
 # Changelog
 
+## [v1.0.0] - 2026-05-28
+
+### Added
+- ✨ 新增多对话管理功能，支持创建、切换、删除会话 - [详细文档](docs/变更摘要/多对话页面.md)
+- ✨ 新增思考过程展示功能，支持开关控制显示/隐藏 - [详细文档](docs/变更摘要/思考过程持久化与显示优化.md)
+- ✨ 新增电商商品查询工具，支持 LLM 自动调用 - [详细文档](docs/变更摘要/电商数据库服务.md)
+- ✨ 新增全链路性能监控，统计向量检索、LLM推理、工具查询耗时 - [详细文档](docs/变更摘要/查询工具接入后端.md)
+- ✨ 新增 [EcommerceService](file:///home/fang/Documents/trae_projects/ragApp/backend/service/ecommerce_service.py) - 电商数据库查询服务
+- ✨ 新增 [QueryEngine](file:///home/fang/Documents/trae_projects/ragApp/backend/service/query_engine.py) - 商品查询引擎
+- ✨ 新增 `/api/ecommerce` 路由，提供自然语言搜索和结构化查询接口
+- ✨ 新增服务层统一管理 (`backend/service/__init__.py`)
+- ✨ 新增原生 OpenAI Function Calling 支持
+- ✨ 新增项目介绍说明文档 - [项目介绍说明.md](docs/项目介绍说明.md)
+
+### Changed
+- 🔧 修改 [rag_service.py](file:///home/fang/Documents/trae_projects/ragApp/backend/service/rag_service.py) - 重构工具调用机制，升级为原生 Function Calling
+- 🔧 修改 [llm_service.py](file:///home/fang/Documents/trae_projects/ragApp/backend/service/llm_service.py) - 新增 `chat_with_tools()` 方法
+- 🔧 修改 [history_service.py](file:///home/fang/Documents/trae_projects/ragApp/backend/service/history_service.py) - 升级为多会话存储架构，所有方法新增 `conv_id` 参数
+- 🔧 修改 [chat.py](file:///home/fang/Documents/trae_projects/ragApp/backend/api/chat.py) - API 响应新增 `timings` 字段，接口重构
+- 🔧 修改 [settings.py](file:///home/fang/Documents/trae_projects/ragApp/backend/config/settings.py) - 新增电商数据库路径配置，更新默认模型 ID
+- 🔧 修改 [main.py](file:///home/fang/Documents/trae_projects/ragApp/backend/main.py) - 统一服务初始化管理
+- 🔧 修改导入方式 - 统一为 `from service import xxx`
+- 🔧 将查询引擎从 `ecommerce_agent_dataset/` 迁移到 `backend/service/`
+- 🔧 新增测试脚本目录 `test/`
+
+### Fixed
+- 🛡️ 修复关闭思考显示按钮时不保存思考过程的问题 - 后台全程记录
+- 🛡️ 修复流式输出后思考内容自动错误消失的问题 - 思考气泡永久保留
+- 🛡️ 修复历史记录读取后后续对话触发 400 错误的问题 - 三重防护纯净化历史消息
+- 🛡️ 修复 thinking 字段混入大模型对话记忆的问题 - 前后端双重剥离
+
+---
+
 ## [Unreleased] - 2026-05-24
 
 ### Added

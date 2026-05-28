@@ -42,7 +42,7 @@ class ConversationInfo(BaseModel):
 
 @router.post("/chat", response_model=ChatResponse)
 async def chat_endpoint(request: ChatRequest):
-    """聊天接口 - 使用 RAG 进行智能对话，自动保存对话历史
+    """聊天接口 - 使用 RAG 与 SQLite 商品搜索进行智能对话，自动保存对话历史
 
     Args:
         request: 聊天请求，包含对话历史和当前问题
@@ -55,7 +55,7 @@ async def chat_endpoint(request: ChatRequest):
     """
     try:
         # 在运行时动态导入服务（避免模块加载时服务未初始化的问题）
-        from service import rag_service, llm_service, history_service
+        from service import tool_chat_service, llm_service, history_service
         
         # 确保用户有会话
         current_conv_id = history_service.ensure_default_conversation(request.user_id)
@@ -68,11 +68,11 @@ async def chat_endpoint(request: ChatRequest):
             if request.conv_id in conv_ids:
                 current_conv_id = request.conv_id
 
-        # 检查 RAG 服务是否初始化
-        if not rag_service:
+        # 检查 SQLite 商品搜索聊天服务是否初始化
+        if not tool_chat_service:
             raise HTTPException(
                 status_code=500,
-                detail="RAG 服务未初始化，请检查服务器配置"
+                detail="SQLite 商品搜索聊天服务未初始化，请检查服务器配置"
             )
 
         # 检查 LLM 服务是否连接成功
@@ -92,8 +92,8 @@ async def chat_endpoint(request: ChatRequest):
             if msg.role != "system"
         ]
 
-        # 调用带工具调用的服务（自动触发商品数据库搜索）
-        result = await rag_service.chat_with_tools(
+        # 调用带工具调用的服务（自动触发 SQLite 商品数据库搜索）
+        result = await tool_chat_service.chat_with_tools(
             user_query=request.user_query,
             conversation_history=history
         )
@@ -104,7 +104,7 @@ async def chat_endpoint(request: ChatRequest):
         if timings:
             print(f"[Timings] user={request.user_id} | 向量检索={timings.get('vector_search', '-')}s | "
                   f"LLM推理={timings.get('llm_calls', '-')}s({timings.get('llm_rounds', '?')}轮) | "
-                  f"工具查询={timings.get('tool_calls', '-')}s({timings.get('tool_rounds', '?')}轮) | "
+                  f"SQLite 工具查询={timings.get('tool_calls', '-')}s({timings.get('tool_rounds', '?')}轮) | "
                   f"总计={timings.get('total', '-')}s")
 
         # 保存对话历史
@@ -127,7 +127,7 @@ async def chat_endpoint(request: ChatRequest):
 
 @router.post("/chat/stream")
 async def chat_stream_endpoint(request: ChatRequest):
-    """流式聊天接口 - 使用 RAG 进行智能对话，流式返回结果
+    """流式聊天接口 - 使用 RAG 与 SQLite 商品搜索进行智能对话，流式返回结果
 
     Args:
         request: 聊天请求，包含对话历史和当前问题
@@ -139,7 +139,7 @@ async def chat_stream_endpoint(request: ChatRequest):
         HTTPException: 处理过程中的错误
     """
     try:
-        from service import rag_service, llm_service, history_service
+        from service import tool_chat_service, llm_service, history_service
         
         current_conv_id = history_service.ensure_default_conversation(request.user_id)
         
@@ -149,10 +149,10 @@ async def chat_stream_endpoint(request: ChatRequest):
             if request.conv_id in conv_ids:
                 current_conv_id = request.conv_id
 
-        if not rag_service:
+        if not tool_chat_service:
             raise HTTPException(
                 status_code=500,
-                detail="RAG 服务未初始化，请检查服务器配置"
+                detail="SQLite 商品搜索聊天服务未初始化，请检查服务器配置"
             )
 
         if not llm_service.connected:
@@ -185,8 +185,8 @@ async def chat_stream_endpoint(request: ChatRequest):
             full_reply = ""
             timings = None
             try:
-                # 使用带工具调用的流式服务（自动触发商品数据库搜索）
-                async for chunk in rag_service.chat_with_tools_stream(
+                # 使用带工具调用的流式服务（自动触发 SQLite 商品数据库搜索）
+                async for chunk in tool_chat_service.chat_with_tools_stream(
                     user_query=request.user_query,
                     conversation_history=history
                 ):
@@ -211,7 +211,7 @@ async def chat_stream_endpoint(request: ChatRequest):
                         if timings:
                             print(f"[Timings] user={request.user_id} | 向量检索={timings.get('vector_search', '-')}s | "
                                   f"LLM推理={timings.get('llm_calls', '-')}s({timings.get('llm_rounds', '?')}轮) | "
-                                  f"工具查询={timings.get('tool_calls', '-')}s({timings.get('tool_rounds', '?')}轮) | "
+                                  f"SQLite 工具查询={timings.get('tool_calls', '-')}s({timings.get('tool_rounds', '?')}轮) | "
                                   f"总计={timings.get('total', '-')}s")
                         
                         # 保存对话历史

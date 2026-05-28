@@ -15,7 +15,7 @@ Usage examples:
     --limit 20
 
 Agent guidance:
-    - Prefer `agent_search_from_text(text=...)` for natural language input.
+    - Prefer `agent_search_by_rule_parsed_text(text=...)` for natural language input.
     - Use `agent_search_products(...)` when the agent already has structured filters.
     - Keep category as a hint if present; the ontology will limit valid attribute families.
     - Use `show_skus=True` only when the user asks for detailed SKU combinations.
@@ -31,7 +31,7 @@ import re
 from pathlib import Path
 from typing import Any
 
-# 数据文件位于 ecommerce_agent_dataset/ 目录
+# 数据文件位于商品数据集目录
 _DATA_DIR = Path(__file__).resolve().parent.parent.parent / "ecommerce_agent_dataset"
 DEFAULT_DB_PATH = _DATA_DIR / "ecommerce.db"
 DEFAULT_ONTOLOGY_PATH = _DATA_DIR / "attribute_ontology.json"
@@ -660,7 +660,7 @@ def agent_search_products(
         }
 
 
-def agent_search_from_text(
+def agent_search_by_rule_parsed_text(
     *,
     text: str,
     db_path: str | Path = DEFAULT_DB_PATH,
@@ -705,6 +705,7 @@ def agent_search_from_text(
     return result
 
 
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Query SQLite with synonym mapping without schema changes.")
     parser.add_argument("--db-path", type=Path, default=DEFAULT_DB_PATH)
@@ -720,7 +721,7 @@ def main() -> None:
     args = parser.parse_args()
 
     if args.text:
-        output = agent_search_from_text(
+        output = agent_search_by_rule_parsed_text(
             text=args.text,
             db_path=args.db_path,
             ontology_path=args.ontology_path,

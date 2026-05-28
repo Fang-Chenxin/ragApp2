@@ -9,6 +9,15 @@ from .rag_service import (
     embedding_service,
     EmbeddingService,
 )
+from .tool_chat_service import (
+    tool_chat_service,
+    ToolChatService,
+)
+from . import sqlite_product_query_tool
+from .sqlite_product_search_service import (
+    sqlite_product_search_service,
+    SQLiteProductSearchService,
+)
 from .history_service import history_service, HistoryService
 
 
@@ -25,17 +34,20 @@ def initialize_services():
     # 同步更新本模块的命名空间，使 "from service import rag_service" 能拿到新实例
     globals()["rag_service"] = _rag_mod.rag_service
 
-    # ecommerce_service 自行初始化
-    from .ecommerce_service import ecommerce_service
-    ecommerce_service.initialize()
+    # sqlite_product_search_service 自行初始化
+    sqlite_product_search_service.initialize()
+
+    # tool_chat_service 依赖向量库、LLM 和工具模块
+    _tool_mod = importlib.import_module(".tool_chat_service", package=__name__)
+    _tool_mod.tool_chat_service = ToolChatService(vector_store, llm_service)
+    globals()["tool_chat_service"] = _tool_mod.tool_chat_service
 
     print("✅ 所有服务初始化完成")
 
 
 def cleanup_services():
     """清理所有服务"""
-    from .ecommerce_service import ecommerce_service
-    ecommerce_service.close()
+    sqlite_product_search_service.close()
     print("✅ 所有服务已关闭")
 
 
@@ -48,6 +60,11 @@ __all__ = [
     "VectorStore",
     "embedding_service",
     "EmbeddingService",
+    "sqlite_product_query_tool",
+    "sqlite_product_search_service",
+    "SQLiteProductSearchService",
+    "tool_chat_service",
+    "ToolChatService",
     "initialize_services",
     "cleanup_services",
     "history_service",

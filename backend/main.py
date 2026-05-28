@@ -10,14 +10,14 @@ import sys
 
 # 添加项目路径
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-# 添加项目根目录，使 ecommerce_agent_dataset 可作为正式包导入
+# 添加项目根目录，使商品数据集可作为正式包导入
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from config.settings import settings
 from service import initialize_services, cleanup_services, llm_service, vector_store
 from api.chat import router as chat_router
 from api.knowledge import router as knowledge_router
-from api.ecommerce import router as ecommerce_router
+from api.sqlite_product_search import router as sqlite_product_search_router
 
 
 @asynccontextmanager
@@ -29,7 +29,7 @@ async def lifespan(app: FastAPI):
     """
     print("🚀 正在启动服务...")
 
-    # 初始化所有服务（LLM、Embedding、向量库、电商）
+    # 初始化所有服务（LLM、Embedding、向量库、SQLite 商品搜索）
     try:
         initialize_services()
         print("✅ 服务启动成功")
@@ -66,7 +66,7 @@ app.add_middleware(
 # 注册路由
 app.include_router(chat_router)
 app.include_router(knowledge_router)
-app.include_router(ecommerce_router)
+app.include_router(sqlite_product_search_router)
 
 
 @app.get("/")

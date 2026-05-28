@@ -21,7 +21,7 @@ from openai import APIConnectionError, APITimeoutError, OpenAI
 
 # 添加后端路径以导入查询引擎
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "backend"))
-from service.query_engine import agent_search_from_text, agent_search_products
+from service.query_engine import agent_search_by_rule_parsed_text, agent_search_products
 
 TOOL_NAME = "query_products"
 TOOL_SPEC: dict[str, Any] = {
@@ -29,7 +29,7 @@ TOOL_SPEC: dict[str, Any] = {
     "function": {
         "name": TOOL_NAME,
         "description": (
-            "Query the local ecommerce SQLite database. "
+            "Query the local SQLite product database. "
             "PREFER structured parameters (category/sub_category/brand/attr_filters) over the text parameter. "
             "Only use 'text' when the user input is already a concrete product spec like 'silver 1TB tablet'. "
             "For vague queries like 'recommend a phone', extract category='数码电子', sub_category='智能手机', etc."
@@ -114,7 +114,7 @@ def run_tool(tool_name: str, arguments: dict[str, Any] | None = None) -> dict[st
     show_skus = bool(args.get("show_skus", True))
 
     if text:
-        return agent_search_from_text(text=str(text), limit=limit, show_skus=show_skus)
+        return agent_search_by_rule_parsed_text(text=str(text), limit=limit, show_skus=show_skus)
 
     attr_filters = _normalize_attr_filters(args.get("attr_filters"))
     if not any([args.get("keyword"), args.get("brand"), args.get("category"), args.get("sub_category"), attr_filters]):

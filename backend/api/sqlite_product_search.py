@@ -1,9 +1,9 @@
-"""API 路由层 - 电商查询接口"""
+"""API 路由层 - SQLite 商品搜索接口"""
 from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel
 from typing import List, Optional, Dict, Any
 
-router = APIRouter(prefix="/api/ecommerce", tags=["ecommerce"])
+router = APIRouter(prefix="/api/product-search", tags=["product-search"])
 
 
 class ProductSearchRequest(BaseModel):
@@ -49,9 +49,9 @@ async def search_by_text(
         查询结果
     """
     try:
-        from service import ecommerce_service
+        from service import sqlite_product_search_service
         
-        result = ecommerce_service.search_from_text(text=text, limit=limit, show_skus=show_skus)
+        result = sqlite_product_search_service.search_by_rule_parsed_text(text=text, limit=limit, show_skus=show_skus)
         
         if not result.get("ok"):
             raise HTTPException(status_code=500, detail=result.get("error", "查询失败"))
@@ -78,9 +78,9 @@ async def search_products(request: ProductSearchRequest):
         查询结果
     """
     try:
-        from service import ecommerce_service
+        from service import sqlite_product_search_service
         
-        result = ecommerce_service.search_products(
+        result = sqlite_product_search_service.search_products(
             keyword=request.keyword,
             brand=request.brand,
             category=request.category,
@@ -129,14 +129,14 @@ async def search_products_get(
         查询结果
     """
     try:
-        from service import ecommerce_service
+        from service import sqlite_product_search_service
         
         attr_filters = []
         if attr_key and attr_value:
             for key, value in zip(attr_key, attr_value):
                 attr_filters.append({"key": key, "value": value})
         
-        result = ecommerce_service.search_products(
+        result = sqlite_product_search_service.search_products(
             keyword=keyword,
             brand=brand,
             category=category,
@@ -160,7 +160,7 @@ async def search_products_get(
 
 @router.get("/tool/spec")
 async def get_tool_spec():
-    """获取电商查询工具的调用规范
+    """获取 SQLite 商品搜索工具的调用规范
     
     返回符合 OpenAI 工具调用格式的规范描述，供 LLM 进行工具调用。
     
@@ -168,9 +168,9 @@ async def get_tool_spec():
         工具调用规范
     """
     try:
-        from service import ecommerce_service
-        
-        return ecommerce_service.get_tool_spec()
+        from service.sqlite_product_query_tool import get_tool_spec as get_sqlite_query_tool_spec
+
+        return get_sqlite_query_tool_spec()
         
     except HTTPException:
         raise
@@ -192,12 +192,9 @@ async def run_tool(request: ToolCallRequest):
         工具执行结果
     """
     try:
-        from service import ecommerce_service
-        
-        result = ecommerce_service.run_tool(
-            tool_name=request.tool_name,
-            arguments=request.arguments
-        )
+        from service.sqlite_product_query_tool import run_tool as run_sqlite_query_tool
+
+        result = run_sqlite_query_tool(request.tool_name, request.arguments)
         
         return result
         
@@ -210,18 +207,18 @@ async def run_tool(request: ToolCallRequest):
 
 @router.get("/health")
 async def health_check():
-    """电商服务健康检查
+    """SQLite 商品搜索服务健康检查
     
     Returns:
         服务状态信息
     """
     try:
-        from service import ecommerce_service
+        from service import sqlite_product_search_service
         
         return {
             "status": "healthy",
-            "db_available": ecommerce_service.db_available,
-            "db_path": str(ecommerce_service.db_path)
+            "db_available": sqlite_product_search_service.db_available,
+            "db_path": str(sqlite_product_search_service.db_path)
         }
         
     except Exception as e:
