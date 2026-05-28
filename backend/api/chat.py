@@ -194,6 +194,28 @@ async def chat_stream_endpoint(request: ChatRequest):
                 ):
                     chunk_type = chunk.get("type")
 
+                    if chunk_type == "status":
+                        data = {
+                            "status": chunk.get("content", ""),
+                            "phase": chunk.get("phase"),
+                            "agent": chunk.get("agent"),
+                            "conv_id": current_conv_id,
+                            "done": False,
+                        }
+                        yield f"data: {json.dumps(data, ensure_ascii=False)}\n\n"
+
+                    elif chunk_type == "selected_products":
+                        data = {
+                            "status": chunk.get("content", ""),
+                            "phase": "selected_products",
+                            "agent": "shopping_agent",
+                            "selected_product_ids": chunk.get("selected_product_ids", []),
+                            "selected_products": chunk.get("selected_products", []),
+                            "conv_id": current_conv_id,
+                            "done": False,
+                        }
+                        yield f"data: {json.dumps(data, ensure_ascii=False)}\n\n"
+
                     if chunk_type == "content":
                         # 流式返回内容片段
                         content = chunk.get("content", "")
@@ -227,6 +249,15 @@ async def chat_stream_endpoint(request: ChatRequest):
                                   f"LLM推理={timings.get('llm_calls', '-')}s({timings.get('llm_rounds', '?')}轮) | "
                                   f"SQLite 工具查询={timings.get('tool_calls', '-')}s({timings.get('tool_rounds', '?')}轮) | "
                                   f"总计={timings.get('total', '-')}s")
+
+                        save_status = {
+                            "status": "正在保存历史",
+                            "phase": "saving_history",
+                            "agent": "shopping_agent",
+                            "conv_id": current_conv_id,
+                            "done": False,
+                        }
+                        yield f"data: {json.dumps(save_status, ensure_ascii=False)}\n\n"
 
                         # 保存对话历史（包含可能的思考内容）
                         try:

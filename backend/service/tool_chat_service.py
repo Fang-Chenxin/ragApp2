@@ -1,7 +1,9 @@
 """工具调用聊天服务模块 - 封装 SQLite 商品搜索工具对话逻辑"""
 from __future__ import annotations
 
+import asyncio
 import json
+import re
 import time
 from typing import Any, AsyncGenerator, Dict, List, Optional
 
@@ -16,6 +18,237 @@ class ToolChatService:
     def __init__(self, vector_store: VectorStore, llm: LLMService):
         self.vector_store = vector_store
         self.llm = llm
+
+    @staticmethod
+    def _status_chunk(
+        content: str,
+        phase: str,
+        *,
+        agent: str = "shopping_agent",
+        extra: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        payload: Dict[str, Any] = {
+            "type": "status",
+            "content": content,
+            "phase": phase,
+            "agent": agent,
+            "timings": None,
+        }
+        if extra:
+            payload.update(extra)
+        return payload
+
+    @staticmethod
+    def _build_need_analysis_messages(
+        context_text: str,
+        conversation_history: Optional[List[Dict[str, str]]],
+        user_query: str,
+    ) -> List[Dict[str, str]]:
+        history_context = ToolChatService._build_history_context(conversation_history, user_query)
+        return [
+            {
+                "role": "system",
+                "content": (
+                    "你是导购助手的需求分析子角色。请基于用户问题、历史对话和知识库线索，"
+                    "用自然、简洁、像人在解释需求的方式，输出 1-3 句需求分析。"
+                    "要求：1) 说明用户真正想解决什么；2) 说明你准备优先检索的方向；"
+                    "3) 如果明显是场景/体验诉求，直接说成场景型购物需求；4) 不要列商品，不要写工具过程，不要编号。\n\n"
+                    f"知识库线索：\n{context_text}\n\n"
+                    f"{history_context}"
+                ),
+            },
+            {
+                "role": "user",
+                "content": f"用户问题：{user_query}\n\n请给出需求分析。",
+            },
+        ]
+
+    @staticmethod
+    def _build_need_analysis_summary(user_query: str, conversation_history: Optional[List[Dict[str, str]]] = None) -> str:
+        query = user_query.strip()
+
+        scene_tags: list[str] = []
+        if any(keyword in query for keyword in ["流畅", "更快", "更稳", "对战", "高手", "体验", "游戏", "高刷", "降噪", "续航", "轻薄", "学习", "办公"]):
+            scene_tags.append("场景型需求")
+        if any(keyword in query for keyword in ["手机", "平板", "笔记本", "耳机", "电脑", "数码", "电子"]):
+            scene_tags.append("数码电子")
+        if any(keyword in query for keyword in ["品牌", "苹果", "华为", "小米", "联想", "三星", "索尼", "飞利浦"]):
+            scene_tags.append("品牌/型号约束")
+
+        if not scene_tags:
+            scene_tags.append("通用导购")
+
+        history_hint = ""
+        if conversation_history:
+            last_user = next(
+                (msg.get("content", "").strip() for msg in reversed(conversation_history) if msg.get("role") == "user" and msg.get("content")),
+                "",
+            )
+            if last_user:
+                history_hint = f"，结合上一轮问题'{last_user[:24]}'继续缩小范围"
+
+        analysis_parts = [
+            f"初步判断：这是一个{'、'.join(scene_tags)}问题",
+            f"当前关键词：{query[:40] if query else '无'}",
+        ]
+        if "场景型需求" in scene_tags:
+            analysis_parts.append("我会优先把它理解为提升体验的购物需求，先看最能解决场景问题的商品")
+        else:
+            analysis_parts.append("我会先找直接相关商品，如果没有再转向相邻品类")
+        if history_hint:
+            analysis_parts.append(history_hint)
+
+        return "；".join(analysis_parts) + "。"
+
+    @staticmethod
+    def _extract_selected_products(
+        tool_results: Dict[str, Dict[str, Any]],
+        tool_call_order: List[str],
+        limit: int = 5,
+    ) -> List[Dict[str, Any]]:
+        selected: List[Dict[str, Any]] = []
+        seen_ids: set[str] = set()
+
+        for tool_call_id in tool_call_order:
+            outcome = tool_results.get(tool_call_id) or {}
+            result = outcome.get("result") or {}
+            if not isinstance(result, dict):
+                continue
+
+            items = result.get("items") or []
+            for item in items:
+                if not isinstance(item, dict):
+                    continue
+                product_id = str(item.get("product_id") or item.get("id") or "").strip()
+                if not product_id or product_id in seen_ids:
+                    continue
+                seen_ids.add(product_id)
+                selected.append(
+                    {
+                        "product_id": product_id,
+                        "title": str(item.get("title") or item.get("name") or ""),
+                        "brand": str(item.get("brand") or ""),
+                        "category": str(item.get("category") or ""),
+                        "sub_category": str(item.get("sub_category") or ""),
+                        "base_price": item.get("base_price") or item.get("price"),
+                    }
+                )
+                if len(selected) >= limit:
+                    return selected
+
+        return selected
+
+    @staticmethod
+    def _build_selected_products_context(selected_products: List[Dict[str, Any]]) -> str:
+        if not selected_products:
+            return "未找到明确命中的商品候选。"
+
+        lines: list[str] = ["## 已选中商品候选（最终推荐必须引用这些 id）"]
+        for item in selected_products:
+            parts = [f"id={item.get('product_id', '')}"]
+            if item.get("title"):
+                parts.append(f"title={item['title']}")
+            if item.get("brand"):
+                parts.append(f"brand={item['brand']}")
+            if item.get("category"):
+                parts.append(f"category={item['category']}")
+            if item.get("sub_category"):
+                parts.append(f"sub_category={item['sub_category']}")
+            if item.get("base_price") is not None:
+                parts.append(f"price={item['base_price']}")
+            lines.append("- " + " | ".join(parts))
+        return "\n".join(lines)
+
+    @staticmethod
+    def _build_final_recommendation_messages(
+        system_prompt: str,
+        analysis_text: str,
+        selected_products: List[Dict[str, Any]],
+    ) -> List[Dict[str, str]]:
+        selected_context = ToolChatService._build_selected_products_context(selected_products)
+        final_guidance = (
+            "你现在进入最终导购推荐阶段。\n"
+            "请基于前面的需求分析和已选中的商品候选，输出面向用户的最终推荐。\n"
+            "要求：1) 开头先用一句话确认用户需求；2) 明确输出已选中商品ID，便于用户核对；"
+            "3) 给出 3-5 个推荐方向或具体商品，并解释为什么相关；4) 不要重复长篇需求分析；"
+            "5) 推荐要自然、像真人导购。\n\n"
+            f"需求分析摘要：\n{analysis_text or '（无）'}\n\n"
+            f"{selected_context}"
+        )
+        return [
+            {
+                "role": "system",
+                "content": system_prompt + "\n\n" + final_guidance,
+            }
+        ]
+    @staticmethod
+    def _parse_tool_arguments(arguments_text: str) -> Dict[str, Any]:
+        try:
+            return json.loads(arguments_text or "{}")
+        except json.JSONDecodeError:
+            return {}
+
+    @staticmethod
+    def _build_system_prompt(context_text: str, conversation_history: Optional[List[Dict[str, str]]], user_query: str) -> str:
+        return (
+            "你是一个资深导购型商品助手，目标不是机械地回复是否有货，而是先分析用户真实需求，再给出最合适的商品建议。\n\n"
+            f"参考知识库内容：\n{context_text}\n\n"
+            f"{ToolChatService._build_history_context(conversation_history, user_query)}\n\n"
+            "## 导购策略（严格遵守）\n"
+            "1. 先判断用户想解决的真实问题，再决定检索方向；不要只盯着用户字面上的词。\n"
+            "2. 优先推荐直接相关商品；如果没有直接相商品，必须转向次相关商品或相邻品类，不要只说没有。\n"
+            "3. 当用户是在描述目标、场景或体验诉求时，例如'我要成为XX高手'、'想提升对战体验'、'想要更流畅'，\n"
+            "   要把需求理解为场景型购物需求，优先考虑数码电子类的手机、平板、笔记本、耳机等提升体验的商品。\n"
+            "4. 如果直搜某个品牌、游戏或泛词没有结果，要主动改用场景词重搜，例如'适合玩<场景>的游戏电子产品'、\n"
+            "   '提升<场景>体验的数码电子产品'、'高刷平板'、'游戏手机'、'降噪耳机'、'轻薄本'。\n"
+            "5. 最终回答要像导购：先一句话概括用户需求，再给出 3-5 个推荐方向或具体商品，并说明每个推荐为什么相关。\n"
+            "6. 工具调用结果会自动返回给你，用于生成最终回答。\n\n"
+            "## 调用工具规则（严格遵守）\n"
+            "1. 调用 query_products 时，必须提供有效的查询参数（text、keyword、brand 等），禁止传空参数 {}。\n"
+            "2. 如果用户的问题引用了对话历史中的商品（如'这几个''上面的''那款''这个牌子'），"
+            "   你必须从上方「最近对话中的商品信息」中提取品牌名、商品名等关键词作为 text 参数。\n"
+            "3. 如果用户的需求是场景型或目标型，优先使用扩展后的场景关键词发起查询，而不是只搜原始名词。\n"
+            "4. 如果第一次检索没有直接命中，不要结束对话，要立即转向次相关品类重新组织推荐。"
+        )
+
+    async def _run_tool_worker(
+        self,
+        tool_call_id: str,
+        tool_name: str,
+        arguments: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        tool_start = time.perf_counter()
+        try:
+            result = await asyncio.to_thread(run_tool, tool_name, arguments)
+            elapsed = round(time.perf_counter() - tool_start, 3)
+            return {
+                "tool_call_id": tool_call_id,
+                "tool_name": tool_name,
+                "arguments": arguments,
+                "result": result,
+                "ok": result.get("ok") if isinstance(result, dict) else None,
+                "total": result.get("total", 0) if isinstance(result, dict) else 0,
+                "elapsed": elapsed,
+                "error": None,
+            }
+        except Exception as exc:
+            elapsed = round(time.perf_counter() - tool_start, 3)
+            error_result = {
+                "ok": False,
+                "error": f"{type(exc).__name__}: {exc}",
+                "total": 0,
+                "items": [],
+            }
+            return {
+                "tool_call_id": tool_call_id,
+                "tool_name": tool_name,
+                "arguments": arguments,
+                "result": error_result,
+                "ok": False,
+                "total": 0,
+                "elapsed": elapsed,
+                "error": f"{type(exc).__name__}: {exc}",
+            }
 
     async def chat_with_tools(
         self,
@@ -42,7 +275,7 @@ class ToolChatService:
             }
 
         t0 = time.perf_counter()
-        context_docs = self.vector_store.query(user_query)
+        context_docs = await asyncio.to_thread(self.vector_store.query, user_query)
         context_text = "\n".join([str(doc) for doc in context_docs])
         elapsed = round(time.perf_counter() - t0, 3)
         timings["vector_search"] = elapsed
@@ -53,17 +286,7 @@ class ToolChatService:
                 preview = str(doc)[:100].replace('\n', ' ')
                 print(f"      文档[{i}]: {preview}...")
 
-        system_prompt = (
-            "你是一个智能商品搜索助手，可以使用工具查询商品信息。\n\n"
-            f"参考知识库内容：\n{context_text}\n\n"
-            f"{self._build_history_context(conversation_history, user_query)}\n\n"
-            "## 调用工具规则（严格遵守）\n"
-            "1. 调用 query_products 时，必须提供有效的查询参数（text、keyword、brand 等），禁止传空参数 {}。\n"
-            "2. 如果用户的问题引用了对话历史中的商品（如'这几个''上面的''那款''这个牌子'），"
-            "   你必须从上方「最近对话中的商品信息」中提取品牌名、商品名等关键词作为 text 参数。\n"
-            "3. 仅当需要查询商品信息时才调用工具，如果不需要查询，直接回答用户问题。\n"
-            "4. 工具调用结果会自动返回给你，用于生成最终回答。"
-        )
+        system_prompt = self._build_system_prompt(context_text, conversation_history, user_query)
 
         messages: list[Dict[str, Any]] = [{"role": "system", "content": system_prompt}]
 
@@ -85,7 +308,6 @@ class ToolChatService:
         for round_idx in range(max_tool_calls):
             print(f"\n  ── LLM 第 {round_idx + 1} 轮调用 ──")
             print(f"      发送消息数: {len(messages)}")
-
             t1 = time.perf_counter()
             try:
                 response = await self.llm.chat_with_tools(
@@ -147,16 +369,7 @@ class ToolChatService:
                 reply_preview = (assistant_message.content or "")[:200].replace('\n', ' ')
                 print(f"      ✅ 无工具调用，直接返回文本")
                 print(f"      回复预览: {reply_preview}...")
-                timings["llm_calls"] = round(llm_call_total, 3)
-                timings["llm_rounds"] = llm_rounds
-                timings["tool_calls"] = round(tool_call_total, 3)
-                timings["tool_rounds"] = tool_rounds
-                timings["total"] = round(time.perf_counter() - t_total_start, 3)
-                self._print_timings_summary(timings)
-                return {
-                    "reply": assistant_message.content or "",
-                    "timings": timings,
-                }
+                break
 
             print(f"      🔧 触发 {len(assistant_message.tool_calls)} 个工具调用:")
             t2 = time.perf_counter()
@@ -271,7 +484,7 @@ class ToolChatService:
             return
 
         t0 = time.perf_counter()
-        context_docs = self.vector_store.query(user_query)
+        context_docs = await asyncio.to_thread(self.vector_store.query, user_query)
         context_text = "\n".join([str(doc) for doc in context_docs])
         elapsed = round(time.perf_counter() - t0, 3)
         timings["vector_search"] = elapsed
@@ -282,17 +495,20 @@ class ToolChatService:
                 preview = str(doc)[:100].replace('\n', ' ')
                 print(f"      文档[{i}]: {preview}...")
 
-        system_prompt = (
-            "你是一个智能商品搜索助手，可以使用工具查询商品信息。\n\n"
-            f"参考知识库内容：\n{context_text}\n\n"
-            f"{self._build_history_context(conversation_history, user_query)}\n\n"
-            "## 调用工具规则（严格遵守）\n"
-            "1. 调用 query_products 时，必须提供有效的查询参数（text、keyword、brand 等），禁止传空参数 {}。\n"
-            "2. 如果用户的问题引用了对话历史中的商品（如'这几个''上面的''那款''这个牌子'），"
-            "   你必须从上方「最近对话中的商品信息」中提取品牌名、商品名等关键词作为 text 参数。\n"
-            "3. 仅当需要查询商品信息时才调用工具，如果不需要查询，直接回答用户问题。\n"
-            "4. 工具调用结果会自动返回给你，用于生成最终回答。"
-        )
+        print(f"      [2] 开始 LLM 需求分析流")
+        yield self._status_chunk("正在分析需求", "need_analysis")
+
+        analysis_text = ""
+        try:
+            analysis_messages = self._build_need_analysis_messages(context_text, conversation_history, user_query)
+            async for chunk in self.llm.chat_stream(analysis_messages):
+                if chunk:
+                    analysis_text += chunk
+        except Exception as exc:
+            analysis_text = self._build_need_analysis_summary(user_query, conversation_history)
+            print(f"      需求分析生成失败，已切换为简化分析：{type(exc).__name__}")
+
+        system_prompt = self._build_system_prompt(context_text, conversation_history, user_query)
 
         messages: list[Dict[str, Any]] = [{"role": "system", "content": system_prompt}]
 
@@ -310,6 +526,9 @@ class ToolChatService:
         llm_rounds = 0
         tool_rounds = 0
         consecutive_empty_params = 0
+
+        tool_results: Dict[str, Dict[str, Any]] = {}
+        tool_call_order: list[str] = []
 
         for round_idx in range(max_tool_calls):
             print(f"\n  ── LLM 第 {round_idx + 1} 轮调用 ──")
@@ -378,6 +597,7 @@ class ToolChatService:
                 reply_preview = (assistant_message.content or "")[:200].replace('\n', ' ')
                 print(f"      ✅ 无工具调用，开始流式返回文本")
                 print(f"      回复预览: {reply_preview}...")
+                yield self._status_chunk("正在整理结果", "organizing_results")
 
                 timings["llm_calls"] = round(llm_call_total, 3)
                 timings["llm_rounds"] = llm_rounds
@@ -413,14 +633,20 @@ class ToolChatService:
                 return
 
             print(f"      🔧 触发 {len(assistant_message.tool_calls)} 个工具调用:")
+            yield self._status_chunk(
+                "正在查询商品",
+                "querying_products",
+                extra={"tool_calls": len(assistant_message.tool_calls)},
+            )
+
             t2 = time.perf_counter()
             round_has_empty = False
+            tool_tasks: list[asyncio.Task[Dict[str, Any]]] = []
+            tool_call_order: list[str] = []
+            tool_call_meta: Dict[str, Dict[str, Any]] = {}
             for tc in assistant_message.tool_calls:
                 tool_name = tc.function.name
-                try:
-                    arguments = json.loads(tc.function.arguments or "{}")
-                except json.JSONDecodeError:
-                    arguments = {}
+                arguments = self._parse_tool_arguments(tc.function.arguments or "{}")
 
                 print(f"         → 工具: {tool_name}")
                 print(f"           参数: {json.dumps(arguments, ensure_ascii=False)[:300]}")
@@ -429,18 +655,55 @@ class ToolChatService:
                 if not has_valid_param:
                     round_has_empty = True
 
-                tool_start = time.perf_counter()
-                result = run_tool(tool_name, arguments)
-                tool_elapsed = round(time.perf_counter() - tool_start, 3)
+                tool_call_order.append(tc.id)
+                tool_call_meta[tc.id] = {
+                    "tool_name": tool_name,
+                    "arguments": arguments,
+                }
+                yield self._status_chunk(
+                    f"正在查询商品：{tool_name}",
+                    "querying_products",
+                    extra={"tool_call_id": tc.id, "tool_name": tool_name},
+                )
+                tool_tasks.append(asyncio.create_task(self._run_tool_worker(tc.id, tool_name, arguments)))
 
-                result_total = result.get("total", 0) if isinstance(result, dict) else 0
-                result_ok = result.get("ok", None) if isinstance(result, dict) else None
-                print(f"           结果: ok={result_ok}, total={result_total}, 耗时={tool_elapsed}s")
+            tool_results: Dict[str, Dict[str, Any]] = {}
+            for task in asyncio.as_completed(tool_tasks):
+                outcome = await task
+                tool_results[outcome["tool_call_id"]] = outcome
+                result = outcome["result"]
+                result_total = outcome.get("total", 0)
+                result_ok = outcome.get("ok", None)
+                print(f"           结果: ok={result_ok}, total={result_total}, 耗时={outcome.get('elapsed', 0)}s")
+                if outcome.get("error"):
+                    yield self._status_chunk(
+                        f"查询失败：{outcome['tool_name']}",
+                        "tool_error",
+                        extra={
+                            "tool_call_id": outcome["tool_call_id"],
+                            "tool_name": outcome["tool_name"],
+                            "error": outcome["error"],
+                        },
+                    )
+                else:
+                    yield self._status_chunk(
+                        f"查询完成：{outcome['tool_name']}",
+                        "tool_done",
+                        extra={
+                            "tool_call_id": outcome["tool_call_id"],
+                            "tool_name": outcome["tool_name"],
+                            "ok": result_ok,
+                            "total": result_total,
+                            "elapsed": outcome.get("elapsed", 0),
+                        },
+                    )
 
+            for tool_call_id in tool_call_order:
+                result = tool_results.get(tool_call_id, {}).get("result", {})
                 messages.append(
                     {
                         "role": "tool",
-                        "tool_call_id": tc.id,
+                        "tool_call_id": tool_call_id,
                         "content": json.dumps(result, ensure_ascii=False),
                     }
                 )
@@ -456,8 +719,20 @@ class ToolChatService:
             else:
                 consecutive_empty_params = 0
 
+        selected_products = self._extract_selected_products(tool_results, tool_call_order)
+        selected_product_ids = [item["product_id"] for item in selected_products]
+        if selected_product_ids:
+            yield {
+                "type": "selected_products",
+                "content": f"已选中商品ID：{', '.join(selected_product_ids)}",
+                "selected_product_ids": selected_product_ids,
+                "selected_products": selected_products,
+                "timings": None,
+            }
+
         print(f"\n  ── 工具调用轮数已耗尽，执行最终流式 LLM 调用 ──")
         print(f"      发送消息数: {len(messages)}")
+        yield self._status_chunk("正在整理结果", "organizing_results")
         t3 = time.perf_counter()
 
         timings["llm_calls"] = round(llm_call_total, 3)
@@ -465,10 +740,17 @@ class ToolChatService:
         timings["tool_calls"] = round(tool_call_total, 3)
         timings["tool_rounds"] = tool_rounds
 
+        final_messages = [
+            {"role": msg["role"], "content": msg["content"]}
+            for msg in messages
+            if msg.get("role") != "system"
+        ]
+        final_messages = self._build_final_recommendation_messages(system_prompt, analysis_text.strip(), selected_products) + final_messages
+
         try:
             # 最终流式返回：若需要思考输出则调用 chat_stream_with_thinking
             if include_thinking and hasattr(self.llm, 'chat_stream_with_thinking'):
-                async for chunk in self.llm.chat_stream_with_thinking(messages):
+                async for chunk in self.llm.chat_stream_with_thinking(final_messages):
                     if isinstance(chunk, dict):
                         if 'thinking' in chunk and chunk['thinking']:
                             yield {"type": "thinking", "content": chunk['thinking'], "timings": None}
@@ -477,7 +759,7 @@ class ToolChatService:
                     else:
                         yield {"type": "content", "content": chunk, "timings": None}
             else:
-                async for chunk in self.llm.chat_stream(messages):
+                async for chunk in self.llm.chat_stream(final_messages):
                     yield {
                         "type": "content",
                         "content": chunk,
@@ -528,8 +810,6 @@ class ToolChatService:
         """从对话历史和工具结果中提取商品信息，注入 system prompt 帮助 LLM 定位关键词"""
         if not conversation_history:
             return ""
-
-        import re
 
         product_mentions: list[str] = []
 

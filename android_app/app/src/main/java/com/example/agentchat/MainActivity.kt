@@ -42,6 +42,10 @@ data class ChatResponse(
 data class StreamResponse(
     val content: String = "",
     val thinking: String = "",
+    val status: String = "",
+    val phase: String? = null,
+    val agent: String? = null,
+    @SerializedName("selected_product_ids") val selectedProductIds: List<String> = emptyList(),
     @SerializedName("conv_id") val convId: String? = null,
     @SerializedName("history_saved") val historySaved: Boolean = true,
     val done: Boolean = false,
@@ -493,6 +497,7 @@ class MainActivity : AppCompatActivity() {
 
         var assistantMainMessageIndex = -1
         var thinkingDisplayIndex = -1
+        var selectedProductsDisplayIndex = -1
         val fullContent = StringBuilder()
         val fullThinking = StringBuilder()
         var hasReceivedData = false
@@ -567,6 +572,37 @@ class MainActivity : AppCompatActivity() {
                                                     addAssistantMessage("❌ 错误: ${streamResponse.error}")
                                                 }
                                                 return@runOnUiThread
+                                            }
+
+                                            if (streamResponse.selectedProductIds.isNotEmpty()) {
+                                                val selectedText = "✅ 已选中商品ID: ${streamResponse.selectedProductIds.joinToString(", ")}"
+                                                if (selectedProductsDisplayIndex == -1) {
+                                                    messages.add(ChatMessage("thinking", selectedText))
+                                                    selectedProductsDisplayIndex = messages.size - 1
+                                                    adapter.notifyItemInserted(selectedProductsDisplayIndex)
+                                                } else {
+                                                    messages[selectedProductsDisplayIndex] = ChatMessage("thinking", selectedText)
+                                                    adapter.notifyItemChanged(selectedProductsDisplayIndex)
+                                                }
+                                                recyclerView.scrollToPosition(selectedProductsDisplayIndex)
+                                            }
+
+                                            if (streamResponse.status.isNotEmpty()) {
+                                                if (streamResponse.phase == "saving_history") {
+                                                    Toast.makeText(
+                                                        this@MainActivity,
+                                                        streamResponse.status,
+                                                        Toast.LENGTH_SHORT
+                                                    ).show()
+                                                } else if (fullContent.isEmpty() && assistantMainMessageIndex >= 0) {
+                                                    val prefix = when (streamResponse.phase) {
+                                                        "need_analysis" -> "🧭"
+                                                        "querying_products" -> "🔎"
+                                                        "organizing_results" -> "🧠"
+                                                        else -> "⏳"
+                                                    }
+                                                    updateAssistantMessage(assistantMainMessageIndex, "$prefix ${streamResponse.status}")
+                                                }
                                             }
                                             
                                             // 1. 处理思考片段
