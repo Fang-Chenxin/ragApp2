@@ -471,7 +471,6 @@ class ToolChatService:
         user_query: str,
         conversation_history: Optional[List[Dict[str, str]]] = None,
         max_tool_calls: int = 5,
-        include_thinking: bool = False,
     ) -> AsyncGenerator[Dict[str, Any], None]:
         """使用原生 function calling 进行对话，流式返回结果"""
         timings: Dict[str, Any] = {}
@@ -518,9 +517,12 @@ class ToolChatService:
             logger.warning("      需求分析生成失败，已切换为简化分析: %s", type(exc).__name__)
 
         analysis_elapsed = round(time.perf_counter() - t_analysis_start, 3)
+        if not analysis_text.strip():
+            analysis_text = self._build_need_analysis_summary(user_query, conversation_history)
+            logger.debug("      分析结果为空，已使用简化分析兜底")
         timings["analysis_calls"] = analysis_elapsed
-        logger.info("      分析耗时: %ss", analysis_elapsed)
-        logger.info("      分析摘要: %s", analysis_text[:200].replace("\n", " "))
+        logger.debug("      分析耗时: %ss", analysis_elapsed)
+        logger.debug("      分析摘要: %s", analysis_text[:200].replace("\n", " "))
         logger.debug("      分析完整内容:\n%s", analysis_text)
         yield {
             "type": "analysis",
@@ -750,31 +752,24 @@ class ToolChatService:
         timings["tool_calls"] = round(tool_call_total, 3)
         timings["tool_rounds"] = tool_rounds
 
-        final_messages = [
-            {"role": msg["role"], "content": msg["content"]}
-            for msg in messages
-            if msg.get("role") != "system"
-        ]
+        final_messages = []
+        for msg in messages:
+            if msg.get("role") == "system":
+                continue
+            entry: Dict[str, Any] = {"role": msg.get("role"), "content": msg.get("content")}
+            # 保留 tool 消息的 tool_call_id，部分 LLM 提供方要求该字段
+            if msg.get("role") == "tool" and msg.get("tool_call_id"):
+                entry["tool_call_id"] = msg.get("tool_call_id")
+            final_messages.append(entry)
         final_messages = self._build_final_recommendation_messages(system_prompt, analysis_text.strip(), selected_products) + final_messages
 
         try:
-            # 最终流式返回：若需要思考输出则调用 chat_stream_with_thinking
-            if include_thinking and hasattr(self.llm, 'chat_stream_with_thinking'):
-                async for chunk in self.llm.chat_stream_with_thinking(final_messages):
-                    if isinstance(chunk, dict):
-                        if 'thinking' in chunk and chunk['thinking']:
-                            yield {"type": "thinking", "content": chunk['thinking'], "timings": None}
-                        elif 'content' in chunk and chunk['content']:
-                            yield {"type": "content", "content": chunk['content'], "timings": None}
-                    else:
-                        yield {"type": "content", "content": chunk, "timings": None}
-            else:
-                async for chunk in self.llm.chat_stream(final_messages):
-                    yield {
-                        "type": "content",
-                        "content": chunk,
-                        "timings": None,
-                    }
+            async for chunk in self.llm.chat_stream(final_messages):
+                yield {
+                    "type": "content",
+                    "content": chunk,
+                    "timings": None,
+                }
             elapsed = round(time.perf_counter() - t3, 3)
             logger.debug("      LLM 流式响应完成 | 耗时: %ss", elapsed)
         except Exception as e:

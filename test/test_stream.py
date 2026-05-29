@@ -3,14 +3,13 @@
 import requests
 import json
 
-url = "http://localhost:8000/api/chat/stream"
+url = "http://localhost:8000/api/chat"
 
 payload = {
     "messages": [],
     "user_query": "你好，请介绍一下自己",
     "user_id": "test_user",
-    "conv_id": None,
-    "include_thinking": True
+    "conv_id": None
 }
 
 print("发送流式聊天请求...")

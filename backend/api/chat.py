@@ -22,7 +22,6 @@ class ChatRequest(BaseModel):
     user_query: str
     user_id: Optional[str] = "default"  # 用户标识
     conv_id: Optional[str] = None  # 会话ID（可选，不指定则使用当前会话）
-    include_thinking: Optional[bool] = False  # 是否包含思考过程
 
 
 class ChatResponse(BaseModel):
@@ -90,14 +89,13 @@ async def chat_endpoint(request: ChatRequest):
 
         async def generate_stream():
             full_reply = ""
-            full_thinking = ""
             full_analysis = ""
+            analysis_summary = ""
             timings = None
             try:
                 async for chunk in tool_chat_service.chat_with_tools_stream(
                     user_query=request.user_query,
                     conversation_history=history,
-                    include_thinking=bool(request.include_thinking),
                 ):
                     chunk_type = chunk.get("type")
 
@@ -113,11 +111,14 @@ async def chat_endpoint(request: ChatRequest):
 
                     elif chunk_type == "analysis":
                         analysis_content = chunk.get("content", "")
+                        summary_content = chunk.get("summary", "")
                         if analysis_content:
                             full_analysis += analysis_content
+                        if summary_content:
+                            analysis_summary = summary_content
                         data = {
                             "analysis": analysis_content,
-                            "summary": chunk.get("summary", ""),
+                            "summary": summary_content,
                             "conv_id": current_conv_id,
                             "done": False,
                         }
@@ -140,17 +141,6 @@ async def chat_endpoint(request: ChatRequest):
                         full_reply += content
                         data = {
                             "content": content,
-                            "conv_id": current_conv_id,
-                            "done": False
-                        }
-                        yield f"data: {json.dumps(data, ensure_ascii=False)}\n\n"
-
-                    elif chunk_type == "thinking":
-                        thinking_content = chunk.get("content", "")
-                        if thinking_content:
-                            full_thinking += thinking_content
-                        data = {
-                            "thinking": thinking_content,
                             "conv_id": current_conv_id,
                             "done": False
                         }
@@ -182,14 +172,24 @@ async def chat_endpoint(request: ChatRequest):
                         yield f"data: {json.dumps(save_status, ensure_ascii=False)}\n\n"
 
                         try:
+                            thinking_to_save = full_analysis.strip() or analysis_summary.strip() or None
+                            logger.info(
+                                "[ThinkingSave] user=%s | full_analysis_len=%d | summary_len=%d | thinking_to_save=%s",
+                                request.user_id,
+                                len(full_analysis),
+                                len(analysis_summary),
+                                "有" if thinking_to_save else "无",
+                            )
                             history_service.save_message(request.user_id, current_conv_id, "user", request.user_query)
-                            if full_thinking.strip():
-                                history_service.save_message(request.user_id, current_conv_id, "assistant", full_reply, thinking=full_thinking)
-                            else:
-                                history_service.save_message(request.user_id, current_conv_id, "assistant", full_reply)
-                            if full_analysis.strip():
-                                logger.info("分析摘要: %s", full_analysis[:200].replace('\n', ' '))
-                                logger.debug("分析完整内容:\n%s", full_analysis)
+                            history_service.save_message(
+                                request.user_id,
+                                current_conv_id,
+                                "assistant",
+                                full_reply,
+                                thinking=thinking_to_save,
+                            )
+                            if thinking_to_save:
+                                logger.debug("分析完整内容:\n%s", thinking_to_save)
                             history_saved = True
                         except Exception as e:
                             logger.error("保存对话历史失败: %s", e)

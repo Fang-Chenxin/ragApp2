@@ -51,8 +51,6 @@ class DummyLLM:
 
     async def chat_with_tools(self, messages, tools=None, tool_choice="auto", temperature=None, thinking_type="enabled", reasoning_effort="medium"):
         self.chat_with_tools_calls += 1
-        if self.chat_with_tools_calls == 1:
-            return DummyResponse("中间分析不应直接展示给用户")
         return DummyResponse("最终回复：我可以帮你继续细化需求。")
 
 

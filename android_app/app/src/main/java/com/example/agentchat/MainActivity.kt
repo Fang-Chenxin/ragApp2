@@ -12,6 +12,7 @@ import android.view.MenuItem
 import android.widget.Button
 import android.widget.EditText
 import android.widget.Toast
+import android.widget.TextView
 import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
 import androidx.appcompat.widget.Toolbar
@@ -22,17 +23,23 @@ import com.google.gson.annotations.SerializedName
 import okhttp3.*
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.RequestBody.Companion.toRequestBody
+import io.noties.markwon.Markwon
 import java.io.IOException
 import java.util.UUID
 
 
-data class ChatMessage(val role: String, val content: String, val thinking: String? = null, val timings: Map<String, Any>? = null)
+data class ChatMessage(
+    val role: String,
+    val content: String,
+    val thinking: String? = null,
+    val timings: Map<String, Any>? = null,
+    val analysisExpanded: Boolean = true
+)
 data class ChatRequest(
     val messages: List<ChatMessage>,
     @SerializedName("user_query") val userQuery: String,
     @SerializedName("user_id") val userId: String,
-    @SerializedName("conv_id") val convId: String? = null,
-    @SerializedName("include_thinking") val includeThinking: Boolean = false
+    @SerializedName("conv_id") val convId: String? = null
 )
 data class ChatResponse(
     val reply: String,
@@ -73,8 +80,6 @@ class MainActivity : AppCompatActivity() {
     private lateinit var adapter: ChatAdapter
     private lateinit var recyclerView: RecyclerView
     private lateinit var editText: EditText
-    private lateinit var thinkingSwitch: android.widget.Switch
-    private lateinit var requestThinkingSwitch: android.widget.Switch
     
     private val client = OkHttpClient.Builder()
         .connectTimeout(30, java.util.concurrent.TimeUnit.SECONDS)
@@ -92,8 +97,6 @@ class MainActivity : AppCompatActivity() {
     companion object {
         private const val PREFS_NAME = "chat_prefs"
         private const val KEY_USER_ID = "user_id"
-        private const val KEY_INCLUDE_THINKING = "include_thinking"
-        private const val KEY_REQUEST_THINKING = "request_thinking"
         private const val REQUEST_CONVERSATION = 1001
         private const val REQUEST_CONFIG = 1002
     }
@@ -122,27 +125,12 @@ class MainActivity : AppCompatActivity() {
         
         recyclerView = findViewById(R.id.chatRecyclerView)
         editText = findViewById(R.id.messageEditText)
-        thinkingSwitch = findViewById(R.id.thinkingSwitch)
-        requestThinkingSwitch = findViewById(R.id.requestThinkingSwitch)
         val sendButton = findViewById<Button>(R.id.sendButton)
 
         adapter = ChatAdapter(messages)
+        adapter.attachMarkwon(Markwon.create(this))
         recyclerView.layoutManager = LinearLayoutManager(this)
         recyclerView.adapter = adapter
-        
-        // 读取保存的思考开关状态
-        thinkingSwitch.isChecked = prefs.getBoolean(KEY_INCLUDE_THINKING, false)
-        thinkingSwitch.setOnCheckedChangeListener { _, isChecked ->
-            prefs.edit().putBoolean(KEY_INCLUDE_THINKING, isChecked).apply()
-            // 切换开关时，重新刷新历史记录以正确显示/隐藏思考过程
-            reloadHistoryWithCurrentThinkingState()
-        }
-
-        // 读取保存的“请求思考”开关状态
-        requestThinkingSwitch.isChecked = prefs.getBoolean(KEY_REQUEST_THINKING, true)
-        requestThinkingSwitch.setOnCheckedChangeListener { _, isChecked ->
-            prefs.edit().putBoolean(KEY_REQUEST_THINKING, isChecked).apply()
-        }
         
         // 应用启动时加载历史记录
         loadHistoryFromServer()
@@ -207,7 +195,7 @@ class MainActivity : AppCompatActivity() {
             setPadding(48, 32, 48, 32)
         }
         
-        AlertDialog.Builder(this)
+        val dialog = AlertDialog.Builder(this)
             .setTitle("服务器地址设置")
             .setMessage("请输入后端服务器的地址")
             .setView(editText)
@@ -223,7 +211,10 @@ class MainActivity : AppCompatActivity() {
                 }
             }
             .setNegativeButton("取消", null)
-            .show()
+            .create()
+
+        dialog.show()
+        dialog.findViewById<TextView>(android.R.id.message)?.setTextIsSelectable(true)
     }
     
     /**
@@ -320,14 +311,17 @@ class MainActivity : AppCompatActivity() {
      * 显示清除历史确认对话框
      */
     private fun showClearHistoryDialog() {
-        AlertDialog.Builder(this)
+        val dialog = AlertDialog.Builder(this)
             .setTitle("清除历史")
             .setMessage("确定要清除当前会话的所有消息吗？此操作不可恢复。")
             .setPositiveButton("确定") { _, _ ->
                 clearHistoryOnServer()
             }
             .setNegativeButton("取消", null)
-            .show()
+            .create()
+
+        dialog.show()
+        dialog.findViewById<TextView>(android.R.id.message)?.setTextIsSelectable(true)
     }
     
     /**
@@ -398,13 +392,6 @@ class MainActivity : AppCompatActivity() {
         }
     }
     
-    /**
-     * 根据当前开关状态重新加载历史并正确渲染
-     */
-    private fun reloadHistoryWithCurrentThinkingState() {
-        loadHistoryFromServer()
-    }
-    
     private fun loadHistoryFromServer() {
         var url = getBackendUrlWithPath("/api/history/$userId")
         if (currentConvId != null) {
@@ -434,27 +421,27 @@ class MainActivity : AppCompatActivity() {
                                 currentConvId = historyResponse.convId
                                 
                                 // 将历史记录加载到消息列表（完全重构建，不依赖内存旧数据）
+                                val oldSize = messages.size
                                 messages.clear()
-                                val showThinking = thinkingSwitch.isChecked
+                                if (oldSize > 0) {
+                                    adapter.notifyItemRangeRemoved(0, oldSize)
+                                }
                                 
                                 // 处理历史记录，完全重新构建消息列表
                                 for (hMsg in historyResponse.history) {
                                     if (hMsg.role == "user") {
                                         messages.add(ChatMessage("user", hMsg.content))
                                     } else if (hMsg.role == "assistant") {
-                                        // 如果有思考过程且开关打开，先显示思考消息
-                                        if (showThinking && !hMsg.thinking.isNullOrEmpty()) {
-                                            messages.add(ChatMessage("thinking", "🤔 " + hMsg.thinking))
-                                        }
-                                        // 再添加助手正式回复，把思考内容完整存到本地
-                                        messages.add(ChatMessage("assistant", hMsg.content, hMsg.thinking))
+                                        messages.add(ChatMessage("assistant", hMsg.content, hMsg.thinking, null, true))
                                     }
                                 }
                                 
-                                adapter.notifyDataSetChanged()
-                                
                                 if (messages.isNotEmpty()) {
-                                    recyclerView.scrollToPosition(messages.size - 1)
+                                    adapter.notifyItemRangeInserted(0, messages.size)
+                                    // 延迟滚动，确保布局完成后文本选择状态正确
+                                    recyclerView.post {
+                                        recyclerView.scrollToPosition(messages.size - 1)
+                                    }
                                 }
                                 
                                 if (historyResponse.total > 0) {
@@ -480,15 +467,13 @@ class MainActivity : AppCompatActivity() {
     
     private fun sendMessageToBackendWithRetry(retryCount: Int) {
         val lastUserMessage = messages.lastOrNull { it.role == "user" } ?: return
-        // 构建给后端请求的历史消息，彻底剥离thinking字段，只保留 role 和 content，绝对不混入思考内容
+        // 构建给后端请求的历史消息，只保留 role 和 content，避免把本地状态消息带回后端
         val cleanedPreviousMessages = messages.dropLast(1)
-            .filter { it.role == "user" || it.role == "assistant" }  // 过滤掉本地临时的 thinking 显示消息
-            .map { ChatMessage(it.role, it.content, null) }  // 强制把thinking置空，结构纯净化
+            .filter { it.role == "user" || it.role == "assistant" }
+            .map { ChatMessage(it.role, it.content, null) }
 
-        val showThinkingDuringStream = thinkingSwitch.isChecked
-        val requestThinking = requestThinkingSwitch.isChecked
         val requestBodyJson = gson.toJson(
-            ChatRequest(cleanedPreviousMessages, lastUserMessage.content, userId, currentConvId, requestThinking)
+            ChatRequest(cleanedPreviousMessages, lastUserMessage.content, userId, currentConvId)
         )
         val mediaType = "application/json; charset=utf-8".toMediaType()
         val body = requestBodyJson.toRequestBody(mediaType)
@@ -498,17 +483,14 @@ class MainActivity : AppCompatActivity() {
             .build()
 
         var assistantMainMessageIndex = -1
-        var analysisDisplayIndex = -1
-        var thinkingDisplayIndex = -1
         var selectedProductsDisplayIndex = -1
         val fullContent = StringBuilder()
         val fullAnalysis = StringBuilder()
-        val fullThinking = StringBuilder()
         var hasReceivedData = false
         
         // 先添加助手的空占位消息
         runOnUiThread {
-            messages.add(ChatMessage("assistant", "🤔 正在思考...", ""))
+            messages.add(ChatMessage("assistant", "", "正在分析需求..."))
             assistantMainMessageIndex = messages.size - 1
             adapter.notifyItemInserted(assistantMainMessageIndex)
             recyclerView.scrollToPosition(assistantMainMessageIndex)
@@ -525,13 +507,13 @@ class MainActivity : AppCompatActivity() {
                     
                     if (retryCount < 2 && e.message?.contains("timeout", ignoreCase = true) == true) {
                         if (assistantMainMessageIndex >= 0) {
-                            updateAssistantMessage(assistantMainMessageIndex, "🔄 正在重试... (${retryCount + 1}/2)")
+                            updateAssistantStatus(assistantMainMessageIndex, "正在重试... (${retryCount + 1}/2)")
                         }
                         Toast.makeText(this@MainActivity, "正在重试... (${retryCount + 1}/2)", Toast.LENGTH_SHORT).show()
                         sendMessageToBackendWithRetry(retryCount + 1)
                     } else {
                         if (assistantMainMessageIndex >= 0) {
-                            updateAssistantMessage(assistantMainMessageIndex, "❌ $errorMessage")
+                            updateAssistantMessage(assistantMainMessageIndex, "❌ $errorMessage", null)
                         } else {
                             addAssistantMessage("❌ $errorMessage")
                         }
@@ -542,6 +524,7 @@ class MainActivity : AppCompatActivity() {
             override fun onResponse(call: Call, response: Response) {
                 response.use {
                     if (!response.isSuccessful) {
+                        val responseBodyStr = response.body?.string()
                         runOnUiThread {
                             val errorMsg = when (response.code) {
                                 404 -> "服务接口不存在"
@@ -549,10 +532,11 @@ class MainActivity : AppCompatActivity() {
                                 503 -> "服务暂时不可用"
                                 else -> "服务器错误: ${response.code}"
                             }
+                            val detailed = if (!responseBodyStr.isNullOrEmpty()) "：${responseBodyStr.take(200)}" else ""
                             if (assistantMainMessageIndex >= 0) {
-                                updateAssistantMessage(assistantMainMessageIndex, "❌ $errorMsg")
+                                updateAssistantMessage(assistantMainMessageIndex, "❌ $errorMsg$detailed")
                             } else {
-                                addAssistantMessage("❌ $errorMsg")
+                                addAssistantMessage("❌ $errorMsg$detailed")
                             }
                         }
                         return
@@ -571,7 +555,7 @@ class MainActivity : AppCompatActivity() {
                                         runOnUiThread {
                                             if (streamResponse.error != null) {
                                                 if (assistantMainMessageIndex >= 0) {
-                                                    updateAssistantMessage(assistantMainMessageIndex, "❌ 错误: ${streamResponse.error}")
+                                                    updateAssistantMessage(assistantMainMessageIndex, "❌ 错误: ${streamResponse.error}", null)
                                                 } else {
                                                     addAssistantMessage("❌ 错误: ${streamResponse.error}")
                                                 }
@@ -581,11 +565,11 @@ class MainActivity : AppCompatActivity() {
                                             if (streamResponse.selectedProductIds.isNotEmpty()) {
                                                 val selectedText = "✅ 已选中商品ID: ${streamResponse.selectedProductIds.joinToString(", ")}"
                                                 if (selectedProductsDisplayIndex == -1) {
-                                                    messages.add(ChatMessage("thinking", selectedText))
+                                                    messages.add(ChatMessage("assistant", selectedText))
                                                     selectedProductsDisplayIndex = messages.size - 1
                                                     adapter.notifyItemInserted(selectedProductsDisplayIndex)
                                                 } else {
-                                                    messages[selectedProductsDisplayIndex] = ChatMessage("thinking", selectedText)
+                                                    messages[selectedProductsDisplayIndex] = ChatMessage("assistant", selectedText)
                                                     adapter.notifyItemChanged(selectedProductsDisplayIndex)
                                                 }
                                                 recyclerView.scrollToPosition(selectedProductsDisplayIndex)
@@ -599,62 +583,37 @@ class MainActivity : AppCompatActivity() {
                                                         Toast.LENGTH_SHORT
                                                     ).show()
                                                 } else if (fullContent.isEmpty() && assistantMainMessageIndex >= 0) {
-                                                    val prefix = when (streamResponse.phase) {
-                                                        "need_analysis" -> "🧭"
-                                                        "querying_products" -> "🔎"
-                                                        "organizing_results" -> "🧠"
-                                                        else -> "⏳"
-                                                    }
-                                                    updateAssistantMessage(assistantMainMessageIndex, "$prefix ${streamResponse.status}")
+                                                    updateAssistantStatus(assistantMainMessageIndex, streamResponse.status)
                                                 }
                                             }
 
                                             if (streamResponse.analysis.isNotEmpty()) {
                                                 fullAnalysis.append(streamResponse.analysis)
-                                                val analysisPreview = "🧭 需求分析：${streamResponse.summary.ifEmpty { streamResponse.analysis }}"
-                                                if (analysisDisplayIndex == -1) {
-                                                    messages.add(assistantMainMessageIndex, ChatMessage("assistant", analysisPreview))
-                                                    analysisDisplayIndex = assistantMainMessageIndex
-                                                    assistantMainMessageIndex++
-                                                    adapter.notifyItemInserted(analysisDisplayIndex)
-                                                } else {
-                                                    messages[analysisDisplayIndex] = ChatMessage("assistant", analysisPreview)
-                                                    adapter.notifyItemChanged(analysisDisplayIndex)
-                                                }
-                                                recyclerView.scrollToPosition(analysisDisplayIndex)
-                                            }
-                                            
-                                            // 1. 处理思考片段
-                                            if (streamResponse.thinking.isNotEmpty()) {
-                                                fullThinking.append(streamResponse.thinking)
-
-                                                // 只有当开关打开时才在界面上显示思考消息气泡
-                                                if (showThinkingDuringStream) {
-                                                    if (thinkingDisplayIndex == -1) {
-                                                        // 在助手主消息前插入思考消息
-                                                        messages.add(assistantMainMessageIndex, ChatMessage("thinking", "🤔 " + fullThinking.toString()))
-                                                        thinkingDisplayIndex = assistantMainMessageIndex
-                                                        // 现在助手主消息的索引往后移了一位
-                                                        assistantMainMessageIndex++
-                                                        adapter.notifyItemInserted(thinkingDisplayIndex)
-                                                    } else {
-                                                        messages[thinkingDisplayIndex] = ChatMessage("thinking", "🤔 " + fullThinking.toString())
-                                                        adapter.notifyItemChanged(thinkingDisplayIndex)
-                                                    }
-                                                    recyclerView.scrollToPosition(thinkingDisplayIndex)
+                                                if (assistantMainMessageIndex >= 0) {
+                                                    messages[assistantMainMessageIndex] = ChatMessage(
+                                                        "assistant",
+                                                        messages[assistantMainMessageIndex].content,
+                                                        fullAnalysis.toString(),
+                                                        messages[assistantMainMessageIndex].timings,
+                                                        messages[assistantMainMessageIndex].analysisExpanded,
+                                                    )
+                                                    adapter.notifyItemChanged(assistantMainMessageIndex)
                                                 }
                                             }
                                             
-                                            // 2. 处理正式内容片段
+                                            // 处理正式内容片段
                                             if (streamResponse.content.isNotEmpty()) {
                                                 fullContent.append(streamResponse.content)
-                                                
-                                                // 不再移除思考气泡！思考内容一直完整显示给用户
-                                                // 思考气泡永久保留在消息列表中
-                                                
-                                                // 更新助手主消息内容，同时带上完整的思考过程保存到本地
+
+                                                // 更新助手主消息内容
                                                 if (assistantMainMessageIndex >= 0) {
-                                                    messages[assistantMainMessageIndex] = ChatMessage("assistant", fullContent.toString(), fullThinking.toString())
+                                                    messages[assistantMainMessageIndex] = ChatMessage(
+                                                        "assistant",
+                                                        fullContent.toString(),
+                                                        fullAnalysis.toString().ifEmpty { null },
+                                                        messages[assistantMainMessageIndex].timings,
+                                                        messages[assistantMainMessageIndex].analysisExpanded,
+                                                    )
                                                     adapter.notifyItemChanged(assistantMainMessageIndex)
                                                 }
                                                 recyclerView.scrollToPosition(assistantMainMessageIndex)
@@ -665,14 +624,16 @@ class MainActivity : AppCompatActivity() {
                                                     currentConvId = streamResponse.convId
                                                 }
                                                 
-                                                // 无论什么情况，最终主消息里都要完整保存思考内容和耗时数据
+                                                // 最终主消息保存回复内容和耗时数据
                                                 if (assistantMainMessageIndex >= 0) {
-                                                    messages[assistantMainMessageIndex] = ChatMessage("assistant", fullContent.toString(), fullThinking.toString(), streamResponse.timings)
+                                                    messages[assistantMainMessageIndex] = ChatMessage(
+                                                        "assistant",
+                                                        fullContent.toString(),
+                                                        fullAnalysis.toString().ifEmpty { null },
+                                                        streamResponse.timings,
+                                                        messages[assistantMainMessageIndex].analysisExpanded,
+                                                    )
                                                     adapter.notifyItemChanged(assistantMainMessageIndex)
-                                                }
-                                                if (analysisDisplayIndex >= 0 && fullAnalysis.isNotEmpty()) {
-                                                    messages[analysisDisplayIndex] = ChatMessage("assistant", "🧭 需求分析：${fullAnalysis.toString()}")
-                                                    adapter.notifyItemChanged(analysisDisplayIndex)
                                                 }
                                             }
                                         }
@@ -704,10 +665,23 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun updateAssistantMessage(index: Int, content: String) {
+        updateAssistantMessage(index, content, messages.getOrNull(index)?.thinking)
+    }
+
+    private fun updateAssistantMessage(index: Int, content: String, thinking: String?) {
         if (index >= 0 && index < messages.size) {
-            val originalThinking = messages[index].thinking
             val originalTimings = messages[index].timings
-            messages[index] = ChatMessage("assistant", content, originalThinking, originalTimings)
+            val originalAnalysisExpanded = messages[index].analysisExpanded
+            messages[index] = ChatMessage("assistant", content, thinking, originalTimings, originalAnalysisExpanded)
+            adapter.notifyItemChanged(index)
+        }
+    }
+
+    private fun updateAssistantStatus(index: Int, status: String) {
+        if (index >= 0 && index < messages.size) {
+            val originalTimings = messages[index].timings
+            val originalAnalysisExpanded = messages[index].analysisExpanded
+            messages[index] = ChatMessage("assistant", "", status, originalTimings, originalAnalysisExpanded)
             adapter.notifyItemChanged(index)
         }
     }

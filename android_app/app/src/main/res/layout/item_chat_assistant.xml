@@ -3,30 +3,107 @@
     android:layout_width="match_parent"
     android:layout_height="wrap_content"
     android:orientation="vertical"
-    android:gravity="start"
-    android:padding="8dp">
+    android:paddingStart="16dp"
+    android:paddingEnd="16dp"
+    android:paddingTop="12dp"
+    android:paddingBottom="18dp">
+
+    <LinearLayout
+        android:id="@+id/analysisContainer"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="vertical"
+        android:visibility="gone"
+        android:paddingBottom="10dp">
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="horizontal"
+            android:gravity="center_vertical"
+            android:paddingBottom="6dp">
+
+            <TextView
+                android:id="@+id/analysisHeaderText"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="已思考"
+                android:textColor="#8A8F98"
+                android:textSize="15sp"
+                android:textStyle="bold" />
+
+            <TextView
+                android:id="@+id/analysisTimeText"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginStart="6dp"
+                android:textColor="#A0A6AF"
+                android:textSize="13sp" />
+
+            <TextView
+                android:id="@+id/analysisArrowText"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginStart="8dp"
+                android:text="⌄"
+                android:textColor="#8A8F98"
+                android:textSize="18sp" />
+        </LinearLayout>
+
+        <TextView
+            android:id="@+id/analysisMessageText"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:textIsSelectable="true"
+            android:longClickable="true"
+            android:textColor="#666666"
+            android:textSize="14sp"
+            android:lineSpacingExtra="4dp"
+            android:paddingStart="2dp"
+            android:paddingEnd="2dp"
+            android:visibility="gone" />
+    </LinearLayout>
 
     <TextView
         android:id="@+id/assistantMessageText"
-        android:layout_width="wrap_content"
+        android:layout_width="match_parent"
         android:layout_height="wrap_content"
-        android:maxWidth="280dp"
-        android:background="@android:color/white"
-        android:textColor="#333333"
-        android:textSize="16sp"
-        android:padding="12dp"
-        android:elevation="2dp" />
+        android:textIsSelectable="true"
+        android:longClickable="true"
+        android:textColor="#222222"
+        android:textSize="17sp"
+        android:lineSpacingExtra="6dp"
+        android:paddingTop="2dp"
+        android:paddingBottom="2dp" />
 
     <TextView
         android:id="@+id/assistantTimingsText"
-        android:layout_width="wrap_content"
+        android:layout_width="match_parent"
         android:layout_height="wrap_content"
-        android:maxWidth="280dp"
         android:textColor="#999999"
         android:textSize="11sp"
-        android:paddingStart="12dp"
-        android:paddingEnd="12dp"
-        android:paddingTop="2dp"
+        android:paddingTop="6dp"
         android:visibility="gone" />
+
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="horizontal"
+        android:gravity="end"
+        android:paddingTop="8dp">
+
+        <Button
+            android:id="@+id/copyReplyButton"
+            android:layout_width="wrap_content"
+            android:layout_height="36dp"
+            android:minWidth="0dp"
+            android:paddingStart="14dp"
+            android:paddingEnd="14dp"
+            android:text="复制回复"
+            android:textSize="13sp"
+            android:textAllCaps="false"
+            android:backgroundTint="#E9EEF5"
+            android:textColor="#334155" />
+    </LinearLayout>
 
 </LinearLayout>
