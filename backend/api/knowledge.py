@@ -2,7 +2,9 @@
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 from typing import Optional, Dict, Any
+from config.logging_config import get_logger
 
+logger = get_logger("api.knowledge")
 router = APIRouter(prefix="/api", tags=["knowledge"])
 
 
@@ -61,7 +63,7 @@ async def add_knowledge(request: AddKnowledgeRequest):
 
     except Exception as e:
         error_msg = str(e)
-        print(f"添加知识错误: {error_msg}")
+        logger.error("添加知识错误: %s", error_msg)
         raise HTTPException(status_code=500, detail=error_msg)
 
 
@@ -92,5 +94,5 @@ async def get_knowledge_stats():
 
     except Exception as e:
         error_msg = str(e)
-        print(f"获取统计信息错误: {error_msg}")
+        logger.error("获取统计信息错误: %s", error_msg)
         raise HTTPException(status_code=500, detail=error_msg)

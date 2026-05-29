@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Any, Optional, List, Dict
 
 from config.settings import settings
+from config.logging_config import get_logger
 
 from service.query_engine import (
     DEFAULT_DB_PATH,
@@ -13,6 +14,8 @@ from service.query_engine import (
     agent_search_by_rule_parsed_text,
     agent_search_products,
 )
+
+logger = get_logger("service.sqlite_product")
 
 
 class SQLiteProductSearchService:
@@ -28,14 +31,18 @@ class SQLiteProductSearchService:
         try:
             if self.db_path.exists():
                 self._db_available = True
-                print(f"✅ SQLite 商品搜索服务初始化完成")
-                print(f"   └── 数据库路径: {self.db_path}")
+                logger.info(
+                    "✅ SQLite 商品搜索服务初始化完成\n"
+                    f"   └── 数据库路径: {self.db_path}"
+                )
             else:
-                print(f"⚠️  SQLite 商品数据库未找到: {self.db_path}")
-                print(f"   └── 将使用模拟数据模式")
+                logger.warning(
+                    f"⚠️  SQLite 商品数据库未找到: {self.db_path}\n"
+                    "   └── 将使用模拟数据模式"
+                )
                 self._db_available = False
         except Exception as e:
-            print(f"❌ SQLite 商品搜索服务初始化失败: {str(e)}")
+            logger.error("❌ SQLite 商品搜索服务初始化失败: %s", e)
             self._db_available = False
 
     @property
@@ -181,7 +188,7 @@ class SQLiteProductSearchService:
 
     def close(self):
         """关闭服务"""
-        print("✅ SQLite 商品搜索服务已关闭")
+        logger.info("SQLite 商品搜索服务已关闭")
 
 
 # 创建全局 SQLite 商品搜索服务实例

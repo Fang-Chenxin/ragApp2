@@ -45,6 +45,8 @@ data class StreamResponse(
     val status: String = "",
     val phase: String? = null,
     val agent: String? = null,
+    @SerializedName("analysis") val analysis: String = "",
+    @SerializedName("summary") val summary: String = "",
     @SerializedName("selected_product_ids") val selectedProductIds: List<String> = emptyList(),
     @SerializedName("conv_id") val convId: String? = null,
     @SerializedName("history_saved") val historySaved: Boolean = true,
@@ -496,9 +498,11 @@ class MainActivity : AppCompatActivity() {
             .build()
 
         var assistantMainMessageIndex = -1
+        var analysisDisplayIndex = -1
         var thinkingDisplayIndex = -1
         var selectedProductsDisplayIndex = -1
         val fullContent = StringBuilder()
+        val fullAnalysis = StringBuilder()
         val fullThinking = StringBuilder()
         var hasReceivedData = false
         
@@ -604,11 +608,26 @@ class MainActivity : AppCompatActivity() {
                                                     updateAssistantMessage(assistantMainMessageIndex, "$prefix ${streamResponse.status}")
                                                 }
                                             }
+
+                                            if (streamResponse.analysis.isNotEmpty()) {
+                                                fullAnalysis.append(streamResponse.analysis)
+                                                val analysisPreview = "🧭 需求分析：${streamResponse.summary.ifEmpty { streamResponse.analysis }}"
+                                                if (analysisDisplayIndex == -1) {
+                                                    messages.add(assistantMainMessageIndex, ChatMessage("assistant", analysisPreview))
+                                                    analysisDisplayIndex = assistantMainMessageIndex
+                                                    assistantMainMessageIndex++
+                                                    adapter.notifyItemInserted(analysisDisplayIndex)
+                                                } else {
+                                                    messages[analysisDisplayIndex] = ChatMessage("assistant", analysisPreview)
+                                                    adapter.notifyItemChanged(analysisDisplayIndex)
+                                                }
+                                                recyclerView.scrollToPosition(analysisDisplayIndex)
+                                            }
                                             
                                             // 1. 处理思考片段
                                             if (streamResponse.thinking.isNotEmpty()) {
                                                 fullThinking.append(streamResponse.thinking)
-                                                
+
                                                 // 只有当开关打开时才在界面上显示思考消息气泡
                                                 if (showThinkingDuringStream) {
                                                     if (thinkingDisplayIndex == -1) {
@@ -650,6 +669,10 @@ class MainActivity : AppCompatActivity() {
                                                 if (assistantMainMessageIndex >= 0) {
                                                     messages[assistantMainMessageIndex] = ChatMessage("assistant", fullContent.toString(), fullThinking.toString(), streamResponse.timings)
                                                     adapter.notifyItemChanged(assistantMainMessageIndex)
+                                                }
+                                                if (analysisDisplayIndex >= 0 && fullAnalysis.isNotEmpty()) {
+                                                    messages[analysisDisplayIndex] = ChatMessage("assistant", "🧭 需求分析：${fullAnalysis.toString()}")
+                                                    adapter.notifyItemChanged(analysisDisplayIndex)
                                                 }
                                             }
                                         }

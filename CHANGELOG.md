@@ -1,5 +1,11 @@
 # Changelog
 
+## [v1.0.1] - 2026-05-29
+
+### Changed
+- 🔧 修改 [backend/service/sqlite_product_query_tool.py](file:///home/fang/Documents/trae_projects/ragApp/backend/service/sqlite_product_query_tool.py) - 优化商品搜索降级与属性过滤器规范 - [详细文档](docs/变更摘要/后端商品搜索服务优化.md)
+
+
 ## [v1.0.0] - 2026-05-28
 
 ### Added

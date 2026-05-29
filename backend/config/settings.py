@@ -36,6 +36,11 @@ class Settings(BaseSettings):
     rag_top_k: int = 3  # 检索返回的文档数量
     rag_temperature: float = 0.7  # LLM 生成温度
 
+    # 日志配置
+    log_level: str = "DEBUG"  # 文件日志级别：DEBUG / INFO / WARNING / ERROR
+    log_file: Optional[str] = "./backend.log"  # 默认写入后端根目录日志文件
+    console_log_level: str = "INFO"  # 控制台日志级别，终端只显示 INFO 及以上
+
     @property
     def api_key_configured(self) -> bool:
         """检查 API Key 是否已配置"""

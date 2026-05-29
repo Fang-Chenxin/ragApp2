@@ -2,7 +2,10 @@
 from openai import AsyncOpenAI
 from typing import Any, Optional, Dict, List, AsyncGenerator
 from config.settings import settings
+from config.logging_config import get_logger
 import httpx
+
+logger = get_logger("service.llm")
 
 
 class LLMService:
@@ -17,7 +20,7 @@ class LLMService:
     def initialize(self):
         """初始化 LLM 客户端"""
         if not settings.api_key_configured:
-            print("⚠️  LLM API Key 未配置，将使用模拟回复模式")
+            logger.warning("⚠️  LLM API Key 未配置，将使用模拟回复模式")
             return
 
         try:
@@ -42,14 +45,16 @@ class LLMService:
             self.connected = True
             
             masked_key = self._mask_api_key(settings.llm_api_key)
-            print(f"✅ LLM 服务初始化完成")
-            print(f"   ├── 模型: {self.model}")
-            print(f"   ├── 基础 URL: {self.base_url}")
-            print(f"   ├── API Key: {masked_key}")
-            print(f"   └── 超时配置: 连接30s, 读取120s, 写入30s")
+            logger.info(
+                "✅ LLM 服务初始化完成\n"
+                f"   ├── 模型: {self.model}\n"
+                f"   ├── 基础 URL: {self.base_url}\n"
+                f"   ├── API Key: {masked_key}\n"
+                "   └── 超时配置: 连接30s, 读取120s, 写入30s"
+            )
             
         except Exception as e:
-            print(f"❌ LLM 服务初始化失败: {str(e)}")
+            logger.error("❌ LLM 服务初始化失败: %s", e)
             raise
 
     @staticmethod
@@ -236,7 +241,7 @@ class LLMService:
         if self.client:
             self.client = None
             self.connected = False
-            print("✅ LLM 服务已关闭")
+            logger.info("LLM 服务已关闭")
 
 
 # 创建全局 LLM 服务实例

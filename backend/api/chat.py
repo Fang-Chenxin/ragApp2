@@ -3,8 +3,10 @@ from fastapi import APIRouter, HTTPException, Header
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from typing import List, Optional, Dict, Any
+from config.logging_config import get_logger
 import json
 
+logger = get_logger("api.chat")
 router = APIRouter(prefix="/api", tags=["chat"])
 
 
@@ -89,6 +91,7 @@ async def chat_endpoint(request: ChatRequest):
         async def generate_stream():
             full_reply = ""
             full_thinking = ""
+            full_analysis = ""
             timings = None
             try:
                 async for chunk in tool_chat_service.chat_with_tools_stream(
@@ -103,6 +106,18 @@ async def chat_endpoint(request: ChatRequest):
                             "status": chunk.get("content", ""),
                             "phase": chunk.get("phase"),
                             "agent": chunk.get("agent"),
+                            "conv_id": current_conv_id,
+                            "done": False,
+                        }
+                        yield f"data: {json.dumps(data, ensure_ascii=False)}\n\n"
+
+                    elif chunk_type == "analysis":
+                        analysis_content = chunk.get("content", "")
+                        if analysis_content:
+                            full_analysis += analysis_content
+                        data = {
+                            "analysis": analysis_content,
+                            "summary": chunk.get("summary", ""),
                             "conv_id": current_conv_id,
                             "done": False,
                         }
@@ -145,10 +160,17 @@ async def chat_endpoint(request: ChatRequest):
                         timings = chunk.get("timings")
 
                         if timings:
-                            print(f"[Timings] user={request.user_id} | 向量检索={timings.get('vector_search', '-')}s | "
-                                  f"LLM推理={timings.get('llm_calls', '-')}s({timings.get('llm_rounds', '?')}轮) | "
-                                  f"SQLite 工具查询={timings.get('tool_calls', '-')}s({timings.get('tool_rounds', '?')}轮) | "
-                                  f"总计={timings.get('total', '-')}s")
+                            logger.info(
+                                "[Timings] user=%s | 分析=%ss | 向量检索=%ss | LLM推理=%ss(%s轮) | SQLite工具查询=%ss(%s轮) | 总计=%ss",
+                                request.user_id,
+                                timings.get('analysis_calls', '-'),
+                                timings.get('vector_search', '-'),
+                                timings.get('llm_calls', '-'),
+                                timings.get('llm_rounds', '?'),
+                                timings.get('tool_calls', '-'),
+                                timings.get('tool_rounds', '?'),
+                                timings.get('total', '-'),
+                            )
 
                         save_status = {
                             "status": "正在保存历史",
@@ -165,9 +187,12 @@ async def chat_endpoint(request: ChatRequest):
                                 history_service.save_message(request.user_id, current_conv_id, "assistant", full_reply, thinking=full_thinking)
                             else:
                                 history_service.save_message(request.user_id, current_conv_id, "assistant", full_reply)
+                            if full_analysis.strip():
+                                logger.info("分析摘要: %s", full_analysis[:200].replace('\n', ' '))
+                                logger.debug("分析完整内容:\n%s", full_analysis)
                             history_saved = True
                         except Exception as e:
-                            print(f"保存对话历史失败: {e}")
+                            logger.error("保存对话历史失败: %s", e)
                             history_saved = False
 
                         data = {
@@ -208,7 +233,7 @@ async def chat_endpoint(request: ChatRequest):
 
     except Exception as e:
         error_msg = str(e)
-        print(f"聊天接口错误: {error_msg}")
+        logger.error("聊天接口错误: %s", error_msg)
         raise HTTPException(status_code=500, detail=error_msg)
 
 
@@ -245,7 +270,7 @@ async def create_conversation(user_id: str, title: Optional[str] = None):
 
     except Exception as e:
         error_msg = str(e)
-        print(f"创建会话失败: {error_msg}")
+        logger.error("创建会话失败: %s", error_msg)
         raise HTTPException(status_code=500, detail=error_msg)
 
 
@@ -274,7 +299,7 @@ async def get_conversations(user_id: str):
 
     except Exception as e:
         error_msg = str(e)
-        print(f"获取会话列表失败: {error_msg}")
+        logger.error("获取会话列表失败: %s", error_msg)
         raise HTTPException(status_code=500, detail=error_msg)
 
 
@@ -311,7 +336,7 @@ async def switch_conversation(user_id: str, conv_id: str):
         raise
     except Exception as e:
         error_msg = str(e)
-        print(f"切换会话失败: {error_msg}")
+        logger.error("切换会话失败: %s", error_msg)
         raise HTTPException(status_code=500, detail=error_msg)
 
 
@@ -344,7 +369,7 @@ async def delete_conversation(user_id: str, conv_id: str):
         raise
     except Exception as e:
         error_msg = str(e)
-        print(f"删除会话失败: {error_msg}")
+        logger.error("删除会话失败: %s", error_msg)
         raise HTTPException(status_code=500, detail=error_msg)
 
 
@@ -379,7 +404,7 @@ async def update_conversation_title(user_id: str, conv_id: str, title: str):
         raise
     except Exception as e:
         error_msg = str(e)
-        print(f"更新会话标题失败: {error_msg}")
+        logger.error("更新会话标题失败: %s", error_msg)
         raise HTTPException(status_code=500, detail=error_msg)
 
 
@@ -410,7 +435,7 @@ async def get_history(user_id: str, conv_id: Optional[str] = None, limit: Option
 
     except Exception as e:
         error_msg = str(e)
-        print(f"获取历史记录失败: {error_msg}")
+        logger.error("获取历史记录失败: %s", error_msg)
         raise HTTPException(status_code=500, detail=error_msg)
 
 
@@ -447,7 +472,7 @@ async def clear_history(user_id: str, conv_id: Optional[str] = None):
         raise
     except Exception as e:
         error_msg = str(e)
-        print(f"清空历史记录失败: {error_msg}")
+        logger.error("清空历史记录失败: %s", error_msg)
         raise HTTPException(status_code=500, detail=error_msg)
 
 
@@ -476,5 +501,5 @@ async def get_history_count(user_id: str, conv_id: Optional[str] = None):
 
     except Exception as e:
         error_msg = str(e)
-        print(f"获取消息数量失败: {error_msg}")
+        logger.error("获取消息数量失败: %s", error_msg)
         raise HTTPException(status_code=500, detail=error_msg)

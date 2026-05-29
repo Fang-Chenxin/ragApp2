@@ -5,7 +5,10 @@ from chromadb.types import Collection
 from typing import List, Dict, Optional, Any, AsyncGenerator
 from openai import AsyncOpenAI
 from config.settings import settings
+from config.logging_config import get_logger
 from service.llm_service import llm_service, LLMService
+
+logger = get_logger("service.rag")
 
 
 class EmbeddingService:
@@ -20,8 +23,7 @@ class EmbeddingService:
         """初始化 Embedding 服务"""
         if settings.use_doubao_embedding:
             if not settings.api_key_configured:
-                print("⚠️  LLM API Key 未配置，无法使用豆包 Embedding")
-                print("✅ 使用本地免费 all-MiniLM-L6-v2 Embedding 模型")
+                logger.warning("⚠️  LLM API Key 未配置，无法使用豆包 Embedding，回退到本地模型")
                 return
 
             from chromadb.utils import embedding_functions
@@ -33,9 +35,11 @@ class EmbeddingService:
             )
 
             masked_key = self._mask_api_key(settings.llm_api_key)
-            print(f"✅ 使用豆包 {settings.embedding_model} 作为向量模型")
-            print(f"   ├── 基础 URL: {settings.embedding_base_url}")
-            print(f"   └── API Key: {masked_key}")
+            logger.info(
+                f"✅ 使用豆包 {settings.embedding_model} 作为向量模型\n"
+                f"   ├── 基础 URL: {settings.embedding_base_url}\n"
+                f"   └── API Key: {masked_key}"
+            )
 
             self.client = AsyncOpenAI(
                 api_key=settings.llm_api_key,
@@ -43,7 +47,7 @@ class EmbeddingService:
             )
             self.connected = True
         else:
-            print("✅ 使用本地免费 all-MiniLM-L6-v2 Embedding 模型")
+            logger.info("✅ 使用本地免费 all-MiniLM-L6-v2 Embedding 模型")
 
     @staticmethod
     def _mask_api_key(api_key: str) -> str:
@@ -82,9 +86,11 @@ class VectorStore:
                 name=settings.chroma_collection_name
             )
 
-        print(f"✅ 向量数据库初始化完成")
-        print(f"   ├── 集合名称: {settings.chroma_collection_name}")
-        print(f"   └── 存储路径: {settings.chroma_path}")
+        logger.info(
+            "✅ 向量数据库初始化完成\n"
+            f"   ├── 集合名称: {settings.chroma_collection_name}\n"
+            f"   └── 存储路径: {settings.chroma_path}"
+        )
 
     def query(self, query_text: str, top_k: Optional[int] = None) -> List[str]:
         """查询相似文档"""

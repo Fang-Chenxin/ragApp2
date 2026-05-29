@@ -14,35 +14,46 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from config.settings import settings
+from config.logging_config import setup_logging, get_logger
 from service import initialize_services, cleanup_services, llm_service, vector_store
 from api.chat import router as chat_router
 from api.knowledge import router as knowledge_router
 from api.sqlite_product_search import router as sqlite_product_search_router
 
+# 初始化日志（必须在所有模块导入之后）
+setup_logging(log_level=settings.log_level, log_file=settings.log_file, console_level=settings.console_log_level)
+logger = get_logger("main")
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """应用生命周期管理
-
-    使用 FastAPI 的 lifespan 管理器替代之前的 global 变量模式，
-    确保服务启动和关闭时的资源管理。
-    """
-    print("🚀 正在启动服务...")
+    """应用生命周期管理"""
+    logger.info(
+        "🚀 正在启动服务...\n"
+        "✅ LLM 服务初始化中...\n"
+        "✅ Embedding 服务初始化中...\n"
+        "✅ 向量库初始化中...\n"
+        "✅ SQLite 商品搜索服务初始化中..."
+    )
 
     # 初始化所有服务（LLM、Embedding、向量库、SQLite 商品搜索）
     try:
         initialize_services()
-        print("✅ 服务启动成功")
+        logger.info(
+            "✅ 服务启动成功\n"
+            f"  ├── 服务地址: http://{settings.server_host}:{settings.server_port}\n"
+            "  └── 文档地址: /docs"
+        )
     except Exception as e:
-        print(f"❌ 服务启动失败: {e}")
+        logger.error("❌ 服务启动失败: %s", e)
         raise
 
     yield
 
     # 清理资源
-    print("🛑 正在关闭服务...")
+    logger.info("🛑 正在关闭服务...")
     cleanup_services()
-    print("✅ 服务已关闭")
+    logger.info("✅ 服务已关闭")
 
 
 # 创建 FastAPI 应用实例

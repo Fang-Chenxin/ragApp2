@@ -10,6 +10,9 @@ from typing import Any, AsyncGenerator, Dict, List, Optional
 from .llm_service import LLMService
 from .sqlite_product_query_tool import get_tool_spec, run_tool
 from .rag_service import VectorStore
+from config.logging_config import get_logger
+
+logger = get_logger("service.tool_chat")
 
 
 class ToolChatService:
@@ -260,15 +263,15 @@ class ToolChatService:
         timings: Dict[str, Any] = {}
         t_total_start = time.perf_counter()
 
-        print(f"\n{'='*60}")
-        print(f"[chat_with_tools] 开始处理请求")
-        print(f"  用户问题: {user_query}")
-        print(f"  历史消息数: {len(conversation_history) if conversation_history else 0}")
-        print(f"  最大工具调用轮数: {max_tool_calls}")
-        print(f"{'='*60}")
+        logger.debug("═══ [chat_with_tools] 开始处理请求")
+
+        logger.debug("  用户问题: %s", user_query)
+        logger.debug("  历史消息数: %s", len(conversation_history) if conversation_history else 0)
+        logger.debug("  最大工具调用轮数: %s", max_tool_calls)
+
 
         if not self.llm.connected:
-            print(f"  ❌ LLM 服务未连接")
+            logger.warning("  LLM 服务未连接")
             return {
                 "reply": "LLM 服务未连接，请检查 LLM_API_KEY 配置。",
                 "timings": timings,
@@ -279,12 +282,12 @@ class ToolChatService:
         context_text = "\n".join([str(doc) for doc in context_docs])
         elapsed = round(time.perf_counter() - t0, 3)
         timings["vector_search"] = elapsed
-        print(f"\n  [1] 向量检索完成 | 耗时: {elapsed}s")
-        print(f"      检索到 {len(context_docs)} 条知识库文档")
+        logger.debug("  [1] 向量检索完成 | 耗时: %ss", elapsed)
+        logger.debug("      检索到 %s 条知识库文档", len(context_docs))
         if context_docs:
             for i, doc in enumerate(context_docs[:3]):
                 preview = str(doc)[:100].replace('\n', ' ')
-                print(f"      文档[{i}]: {preview}...")
+                logger.debug("      文档[%s]: %s...", i, preview)
 
         system_prompt = self._build_system_prompt(context_text, conversation_history, user_query)
 
@@ -295,7 +298,7 @@ class ToolChatService:
                 messages.append({"role": msg["role"], "content": msg["content"]})
 
         messages.append({"role": "user", "content": user_query})
-        print(f"  构建消息列表: {len(messages)} 条 (含 system + 历史 + 当前问题)")
+        logger.debug("  构建消息列表: %s 条 (含 system + 历史 + 当前问题)", len(messages))
 
         tools = [get_tool_spec()]
 
@@ -306,8 +309,8 @@ class ToolChatService:
         consecutive_empty_params = 0
 
         for round_idx in range(max_tool_calls):
-            print(f"\n  ── LLM 第 {round_idx + 1} 轮调用 ──")
-            print(f"      发送消息数: {len(messages)}")
+            logger.debug("  ── LLM 第 %s 轮调用 ──", round_idx + 1)
+            logger.debug("      发送消息数: %s", len(messages))
             t1 = time.perf_counter()
             try:
                 response = await self.llm.chat_with_tools(
@@ -317,7 +320,7 @@ class ToolChatService:
                 )
             except Exception as e:
                 elapsed = round(time.perf_counter() - t1, 3)
-                print(f"      ❌ LLM 调用异常 | 耗时: {elapsed}s | {type(e).__name__}: {e}")
+                logger.error("      LLM 调用异常 | 耗时: %ss | %s: %s", elapsed, type(e).__name__, e)
                 timings["llm_calls"] = round(llm_call_total + elapsed, 3)
                 timings["tool_calls"] = round(tool_call_total, 3)
                 timings["total"] = round(time.perf_counter() - t_total_start, 3)
@@ -336,16 +339,16 @@ class ToolChatService:
             if usage:
                 usage_info = f" | prompt_tokens={usage.prompt_tokens}, completion_tokens={usage.completion_tokens}"
 
-            print(f"      LLM 响应完成 | 耗时: {elapsed}s{usage_info}")
+            logger.debug("      LLM 响应完成 | 耗时: %ss%s", elapsed, usage_info)
 
             if assistant_message.content:
                 content_preview = assistant_message.content[:500].replace('\n', '\n      │ ')
-                print(f"      LLM 回复内容:")
-                print(f"      │ {content_preview}")
+                logger.debug("      LLM 回复内容:")
+                logger.debug("      │ %s", content_preview)
                 if len(assistant_message.content) > 500:
-                    print(f"      │ ... (共 {len(assistant_message.content)} 字符)")
+                    logger.debug("      │ ... (共 %s 字符)", len(assistant_message.content))
             else:
-                print(f"      LLM 回复内容: (空，仅工具调用)")
+                logger.debug("      LLM 回复内容: (空，仅工具调用)")
 
             assistant_payload: Dict[str, Any] = {
                 "role": "assistant",
@@ -367,8 +370,8 @@ class ToolChatService:
 
             if not assistant_message.tool_calls:
                 reply_preview = (assistant_message.content or "")[:200].replace('\n', ' ')
-                print(f"      ✅ 无工具调用，直接返回文本")
-                print(f"      回复预览: {reply_preview}...")
+                logger.debug("      ✅ 无工具调用，直接返回文本")
+                logger.debug("      回复预览: %s...", reply_preview)
                 # LLM 已返回最终内容，无需再做额外调用
                 timings["llm_calls"] = round(llm_call_total, 3)
                 timings["llm_rounds"] = llm_rounds
@@ -378,7 +381,7 @@ class ToolChatService:
                 self._print_timings_summary(timings)
                 return {"reply": assistant_message.content or "", "timings": timings}
 
-            print(f"      🔧 触发 {len(assistant_message.tool_calls)} 个工具调用:")
+            logger.debug("      🔧 触发 %s 个工具调用:", len(assistant_message.tool_calls))
             t2 = time.perf_counter()
             round_has_empty = False
             for tc in assistant_message.tool_calls:
@@ -388,8 +391,8 @@ class ToolChatService:
                 except json.JSONDecodeError:
                     arguments = {}
 
-                print(f"         → 工具: {tool_name}")
-                print(f"           参数: {json.dumps(arguments, ensure_ascii=False)[:300]}")
+                logger.debug("         → 工具: %s", tool_name)
+                logger.debug("           参数: %s", json.dumps(arguments, ensure_ascii=False)[:300])
 
                 has_valid_param = any(arguments.get(k) for k in ["text", "keyword", "brand", "category", "sub_category", "attr_filters"])
                 if not has_valid_param:
@@ -401,7 +404,7 @@ class ToolChatService:
 
                 result_total = result.get("total", 0) if isinstance(result, dict) else 0
                 result_ok = result.get("ok", None) if isinstance(result, dict) else None
-                print(f"           结果: ok={result_ok}, total={result_total}, 耗时={tool_elapsed}s")
+                logger.debug("           结果: ok=%s, total=%s, 耗时=%ss", result_ok, result_total, tool_elapsed)
 
                 messages.append(
                     {
@@ -415,15 +418,15 @@ class ToolChatService:
 
             if round_has_empty:
                 consecutive_empty_params += 1
-                print(f"      ⚠️  检测到空参数调用 (连续 {consecutive_empty_params} 次)")
+                logger.warning("      检测到空参数调用 (连续 %s 次)", consecutive_empty_params)
                 if consecutive_empty_params >= 2:
-                    print(f"      🛑 断路器触发：连续空参数，提前退出工具循环，转为纯文本回复")
+                    logger.warning("      断路器触发：连续空参数，提前退出工具循环")
                     break
             else:
                 consecutive_empty_params = 0
 
-        print(f"\n  ── 工具调用轮数已耗尽，执行最终纯文本 LLM 调用 ──")
-        print(f"      发送消息数: {len(messages)}")
+        logger.debug("  ── 工具调用轮数已耗尽，执行最终纯文本 LLM 调用 ──")
+        logger.debug("      发送消息数: %s", len(messages))
         t3 = time.perf_counter()
         try:
             final_response = await self.llm.chat_with_tools(
@@ -437,20 +440,20 @@ class ToolChatService:
             usage_info = ""
             if usage:
                 usage_info = f" | prompt_tokens={usage.prompt_tokens}, completion_tokens={usage.completion_tokens}"
-            print(f"      LLM 响应完成 | 耗时: {elapsed}s{usage_info}")
+            logger.debug("      LLM 响应完成 | 耗时: %ss%s", elapsed, usage_info)
         except Exception as e:
             elapsed = round(time.perf_counter() - t3, 3)
-            print(f"      ❌ 最终 LLM 调用异常 | 耗时: {elapsed}s | {type(e).__name__}: {e}")
+            logger.error("      最终 LLM 调用异常 | 耗时: %ss | %s: %s", elapsed, type(e).__name__, e)
             reply = f"LLM 调用失败: {type(e).__name__}: {e}"
         llm_call_total += time.perf_counter() - t3
         llm_rounds += 1
 
         if reply:
             content_preview = reply[:500].replace('\n', '\n      │ ')
-            print(f"      最终回复内容:")
-            print(f"      │ {content_preview}")
+            logger.debug("      最终回复内容:")
+            logger.debug("      │ %s", content_preview)
             if len(reply) > 500:
-                print(f"      │ ... (共 {len(reply)} 字符)")
+                logger.debug("      │ ... (共 %s 字符)", len(reply))
 
         timings["llm_calls"] = round(llm_call_total, 3)
         timings["llm_rounds"] = llm_rounds
@@ -474,15 +477,13 @@ class ToolChatService:
         timings: Dict[str, Any] = {}
         t_total_start = time.perf_counter()
 
-        print(f"\n{'='*60}")
-        print(f"[chat_with_tools_stream] 开始处理请求")
-        print(f"  用户问题: {user_query}")
-        print(f"  历史消息数: {len(conversation_history) if conversation_history else 0}")
-        print(f"  最大工具调用轮数: {max_tool_calls}")
-        print(f"{'='*60}")
+        logger.debug("═══ [chat_with_tools_stream] 开始处理请求")
+        logger.debug("  用户问题: %s", user_query)
+        logger.debug("  历史消息数: %s", len(conversation_history) if conversation_history else 0)
+        logger.debug("  最大工具调用轮数: %s", max_tool_calls)
 
         if not self.llm.connected:
-            print(f"  ❌ LLM 服务未连接")
+            logger.warning("  LLM 服务未连接")
             yield {
                 "type": "error",
                 "content": "LLM 服务未连接，请检查 LLM_API_KEY 配置。",
@@ -495,17 +496,18 @@ class ToolChatService:
         context_text = "\n".join([str(doc) for doc in context_docs])
         elapsed = round(time.perf_counter() - t0, 3)
         timings["vector_search"] = elapsed
-        print(f"\n  [1] 向量检索完成 | 耗时: {elapsed}s")
-        print(f"      检索到 {len(context_docs)} 条知识库文档")
+        logger.debug("  [1] 向量检索完成 | 耗时: %ss", elapsed)
+        logger.debug("      检索到 %s 条知识库文档", len(context_docs))
         if context_docs:
             for i, doc in enumerate(context_docs[:3]):
                 preview = str(doc)[:100].replace('\n', ' ')
-                print(f"      文档[{i}]: {preview}...")
+                logger.debug("      文档[%s]: %s...", i, preview)
 
-        print(f"      [2] 开始 LLM 需求分析流")
+        logger.debug("      [2] 开始 LLM 需求分析流")
         yield self._status_chunk("正在分析需求", "need_analysis")
 
         analysis_text = ""
+        t_analysis_start = time.perf_counter()
         try:
             analysis_messages = self._build_need_analysis_messages(context_text, conversation_history, user_query)
             async for chunk in self.llm.chat_stream(analysis_messages):
@@ -513,7 +515,19 @@ class ToolChatService:
                     analysis_text += chunk
         except Exception as exc:
             analysis_text = self._build_need_analysis_summary(user_query, conversation_history)
-            print(f"      需求分析生成失败，已切换为简化分析：{type(exc).__name__}")
+            logger.warning("      需求分析生成失败，已切换为简化分析: %s", type(exc).__name__)
+
+        analysis_elapsed = round(time.perf_counter() - t_analysis_start, 3)
+        timings["analysis_calls"] = analysis_elapsed
+        logger.info("      分析耗时: %ss", analysis_elapsed)
+        logger.info("      分析摘要: %s", analysis_text[:200].replace("\n", " "))
+        logger.debug("      分析完整内容:\n%s", analysis_text)
+        yield {
+            "type": "analysis",
+            "content": analysis_text,
+            "summary": analysis_text[:200].replace("\n", " "),
+            "timings": {"analysis_calls": analysis_elapsed},
+        }
 
         system_prompt = self._build_system_prompt(context_text, conversation_history, user_query)
 
@@ -524,7 +538,7 @@ class ToolChatService:
                 messages.append({"role": msg["role"], "content": msg["content"]})
 
         messages.append({"role": "user", "content": user_query})
-        print(f"  构建消息列表: {len(messages)} 条 (含 system + 历史 + 当前问题)")
+        logger.debug("  构建消息列表: %s 条 (含 system + 历史 + 当前问题)", len(messages))
 
         tools = [get_tool_spec()]
 
@@ -538,8 +552,8 @@ class ToolChatService:
         tool_call_order: list[str] = []
 
         for round_idx in range(max_tool_calls):
-            print(f"\n  ── LLM 第 {round_idx + 1} 轮调用 ──")
-            print(f"      发送消息数: {len(messages)}")
+            logger.debug("  ── LLM 第 %s 轮调用 ──", round_idx + 1)
+            logger.debug("      发送消息数: %s", len(messages))
 
             t1 = time.perf_counter()
             try:
@@ -550,8 +564,9 @@ class ToolChatService:
                 )
             except Exception as e:
                 elapsed = round(time.perf_counter() - t1, 3)
-                print(f"      ❌ LLM 调用异常 | 耗时: {elapsed}s | {type(e).__name__}: {e}")
+                logger.error("      LLM 调用异常 | 耗时: %ss | %s: %s", elapsed, type(e).__name__, e)
                 timings["llm_calls"] = round(llm_call_total + elapsed, 3)
+                timings["analysis_calls"] = timings.get("analysis_calls", 0)
                 timings["tool_calls"] = round(tool_call_total, 3)
                 timings["total"] = round(time.perf_counter() - t_total_start, 3)
                 yield {
@@ -571,16 +586,16 @@ class ToolChatService:
             if usage:
                 usage_info = f" | prompt_tokens={usage.prompt_tokens}, completion_tokens={usage.completion_tokens}"
 
-            print(f"      LLM 响应完成 | 耗时: {elapsed}s{usage_info}")
+            logger.debug("      LLM 响应完成 | 耗时: %ss%s", elapsed, usage_info)
 
             if assistant_message.content:
                 content_preview = assistant_message.content[:500].replace('\n', '\n      │ ')
-                print(f"      LLM 回复内容:")
-                print(f"      │ {content_preview}")
+                logger.debug("      LLM 回复内容:")
+                logger.debug("      │ %s", content_preview)
                 if len(assistant_message.content) > 500:
-                    print(f"      │ ... (共 {len(assistant_message.content)} 字符)")
+                    logger.debug("      │ ... (共 %s 字符)", len(assistant_message.content))
             else:
-                print(f"      LLM 回复内容: (空，仅工具调用)")
+                logger.debug("      LLM 回复内容: (空，仅工具调用)")
 
             assistant_payload: Dict[str, Any] = {
                 "role": "assistant",
@@ -602,12 +617,13 @@ class ToolChatService:
 
             if not assistant_message.tool_calls:
                 reply_preview = (assistant_message.content or "")[:200].replace('\n', ' ')
-                print(f"      ✅ 无工具调用，开始流式返回文本")
-                print(f"      回复预览: {reply_preview}...")
+                logger.debug("      ✅ 无工具调用，开始流式返回文本")
+                logger.debug("      回复预览: %s...", reply_preview)
                 yield self._status_chunk("正在整理结果", "organizing_results")
 
                 timings["llm_calls"] = round(llm_call_total, 3)
                 timings["llm_rounds"] = llm_rounds
+                timings["analysis_calls"] = timings.get("analysis_calls", 0)
                 timings["tool_calls"] = round(tool_call_total, 3)
                 timings["tool_rounds"] = tool_rounds
 
@@ -625,7 +641,7 @@ class ToolChatService:
                 }
                 return
 
-            print(f"      🔧 触发 {len(assistant_message.tool_calls)} 个工具调用:")
+            logger.debug("      🔧 触发 %s 个工具调用:", len(assistant_message.tool_calls))
             yield self._status_chunk(
                 "正在查询商品",
                 "querying_products",
@@ -641,8 +657,8 @@ class ToolChatService:
                 tool_name = tc.function.name
                 arguments = self._parse_tool_arguments(tc.function.arguments or "{}")
 
-                print(f"         → 工具: {tool_name}")
-                print(f"           参数: {json.dumps(arguments, ensure_ascii=False)[:300]}")
+                logger.debug("         → 工具: %s", tool_name)
+                logger.debug("           参数: %s", json.dumps(arguments, ensure_ascii=False)[:300])
 
                 has_valid_param = any(arguments.get(k) for k in ["text", "keyword", "brand", "category", "sub_category", "attr_filters"])
                 if not has_valid_param:
@@ -667,7 +683,7 @@ class ToolChatService:
                 result = outcome["result"]
                 result_total = outcome.get("total", 0)
                 result_ok = outcome.get("ok", None)
-                print(f"           结果: ok={result_ok}, total={result_total}, 耗时={outcome.get('elapsed', 0)}s")
+                logger.debug("           结果: ok=%s, total=%s, 耗时=%ss", result_ok, result_total, outcome.get("elapsed", 0))
                 if outcome.get("error"):
                     yield self._status_chunk(
                         f"查询失败：{outcome['tool_name']}",
@@ -705,9 +721,9 @@ class ToolChatService:
 
             if round_has_empty:
                 consecutive_empty_params += 1
-                print(f"      ⚠️  检测到空参数调用 (连续 {consecutive_empty_params} 次)")
+                logger.warning("      检测到空参数调用 (连续 %s 次)", consecutive_empty_params)
                 if consecutive_empty_params >= 2:
-                    print(f"      🛑 断路器触发：连续空参数，提前退出工具循环，转为纯文本回复")
+                    logger.warning("      断路器触发：连续空参数，提前退出工具循环")
                     break
             else:
                 consecutive_empty_params = 0
@@ -723,13 +739,14 @@ class ToolChatService:
                 "timings": None,
             }
 
-        print(f"\n  ── 工具调用轮数已耗尽，执行最终流式 LLM 调用 ──")
-        print(f"      发送消息数: {len(messages)}")
+        logger.debug("  ── 工具调用轮数已耗尽，执行最终流式 LLM 调用 ──")
+        logger.debug("      发送消息数: %s", len(messages))
         yield self._status_chunk("正在整理结果", "organizing_results")
         t3 = time.perf_counter()
 
         timings["llm_calls"] = round(llm_call_total, 3)
         timings["llm_rounds"] = llm_rounds
+        timings["analysis_calls"] = timings.get("analysis_calls", 0)
         timings["tool_calls"] = round(tool_call_total, 3)
         timings["tool_rounds"] = tool_rounds
 
@@ -759,10 +776,10 @@ class ToolChatService:
                         "timings": None,
                     }
             elapsed = round(time.perf_counter() - t3, 3)
-            print(f"      LLM 流式响应完成 | 耗时: {elapsed}s")
+            logger.debug("      LLM 流式响应完成 | 耗时: %ss", elapsed)
         except Exception as e:
             elapsed = round(time.perf_counter() - t3, 3)
-            print(f"      ❌ 最终 LLM 调用异常 | 耗时: {elapsed}s | {type(e).__name__}: {e}")
+            logger.error("      最终 LLM 调用异常 | 耗时: %ss | %s: %s", elapsed, type(e).__name__, e)
             yield {
                 "type": "error",
                 "content": f"LLM 调用失败: {type(e).__name__}: {e}",
@@ -786,14 +803,14 @@ class ToolChatService:
     @staticmethod
     def _print_timings_summary(timings: Dict[str, Any]):
         """打印耗时汇总"""
-        print(f"\n  {'─'*40}")
-        print(f"  耗时汇总:")
-        print(f"    向量检索: {timings.get('vector_search', '-')}s")
-        print(f"    LLM推理: {timings.get('llm_calls', '-')}s ({timings.get('llm_rounds', '?')}轮)")
-        print(f"    工具查询: {timings.get('tool_calls', '-')}s ({timings.get('tool_rounds', '?')}轮)")
-        print(f"    总计:     {timings.get('total', '-')}s")
-        print(f"  {'─'*40}")
-        print(f"{'='*60}\n")
+        logger.debug("  ────────────────────────────────────")
+        logger.debug("  耗时汇总:")
+        logger.debug("    分析: %ss", timings.get('analysis_calls', '-'))
+        logger.debug("    向量检索: %ss", timings.get('vector_search', '-'))
+        logger.debug("    LLM推理: %ss (%s轮)", timings.get('llm_calls', '-'), timings.get('llm_rounds', '?'))
+        logger.debug("    工具查询: %ss (%s轮)", timings.get('tool_calls', '-'), timings.get('tool_rounds', '?'))
+        logger.debug("    总计:     %ss", timings.get('total', '-'))
+        logger.debug("  ────────────────────────────────────")
 
     @staticmethod
     def _build_history_context(

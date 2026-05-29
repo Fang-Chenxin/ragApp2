@@ -5,6 +5,9 @@ import uuid
 from typing import List, Dict, Optional
 from datetime import datetime
 from config.settings import settings
+from config.logging_config import get_logger
+
+logger = get_logger("service.history")
 
 # 基于本文件位置计算 backend 目录，确保路径不依赖 CWD
 _BACKEND_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -301,7 +304,7 @@ class HistoryService:
             return history
 
         except (json.JSONDecodeError, IOError) as e:
-            print(f"加载历史记录失败: {e}")
+            logger.error("加载历史记录失败: %s", e)
             return []
 
     def clear_history(self, user_id: str, conv_id: Optional[str] = None) -> bool:
@@ -329,7 +332,7 @@ class HistoryService:
                 self._update_conv_meta(user_id, conv_id, 0, "")
                 return True
             except OSError as e:
-                print(f"清空历史记录失败: {e}")
+                logger.error("清空历史记录失败: %s", e)
                 return False
         return True
 

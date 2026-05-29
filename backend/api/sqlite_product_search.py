@@ -2,7 +2,9 @@
 from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel
 from typing import List, Optional, Dict, Any
+from config.logging_config import get_logger
 
+logger = get_logger("api.product_search")
 router = APIRouter(prefix="/api/product-search", tags=["product-search"])
 
 
@@ -61,7 +63,7 @@ async def search_by_text(
     except HTTPException:
         raise
     except Exception as e:
-        print(f"自然语言搜索接口错误: {e}")
+        logger.error("自然语言搜索接口错误: %s", e)
         raise HTTPException(status_code=500, detail="服务器内部错误")
 
 
@@ -98,7 +100,7 @@ async def search_products(request: ProductSearchRequest):
     except HTTPException:
         raise
     except Exception as e:
-        print(f"商品搜索接口错误: {e}")
+        logger.error("商品搜索接口错误: %s", e)
         raise HTTPException(status_code=500, detail="服务器内部错误")
 
 
@@ -154,7 +156,7 @@ async def search_products_get(
     except HTTPException:
         raise
     except Exception as e:
-        print(f"商品搜索(GET)接口错误: {e}")
+        logger.error("商品搜索(GET)接口错误: %s", e)
         raise HTTPException(status_code=500, detail="服务器内部错误")
 
 
@@ -175,7 +177,7 @@ async def get_tool_spec():
     except HTTPException:
         raise
     except Exception as e:
-        print(f"获取工具规范接口错误: {e}")
+        logger.error("获取工具规范接口错误: %s", e)
         raise HTTPException(status_code=500, detail="服务器内部错误")
 
 
@@ -201,7 +203,7 @@ async def run_tool(request: ToolCallRequest):
     except HTTPException:
         raise
     except Exception as e:
-        print(f"工具调用接口错误: {e}")
+        logger.error("工具调用接口错误: %s", e)
         raise HTTPException(status_code=500, detail="服务器内部错误")
 
 
@@ -223,5 +225,5 @@ async def health_check():
         
     except Exception as e:
         error_msg = str(e)
-        print(f"健康检查接口错误: {error_msg}")
+        logger.error("健康检查接口错误: %s", error_msg)
         raise HTTPException(status_code=500, detail=error_msg)
