@@ -369,7 +369,14 @@ class ToolChatService:
                 reply_preview = (assistant_message.content or "")[:200].replace('\n', ' ')
                 print(f"      ✅ 无工具调用，直接返回文本")
                 print(f"      回复预览: {reply_preview}...")
-                break
+                # LLM 已返回最终内容，无需再做额外调用
+                timings["llm_calls"] = round(llm_call_total, 3)
+                timings["llm_rounds"] = llm_rounds
+                timings["tool_calls"] = round(tool_call_total, 3)
+                timings["tool_rounds"] = tool_rounds
+                timings["total"] = round(time.perf_counter() - t_total_start, 3)
+                self._print_timings_summary(timings)
+                return {"reply": assistant_message.content or "", "timings": timings}
 
             print(f"      🔧 触发 {len(assistant_message.tool_calls)} 个工具调用:")
             t2 = time.perf_counter()
@@ -604,24 +611,10 @@ class ToolChatService:
                 timings["tool_calls"] = round(tool_call_total, 3)
                 timings["tool_rounds"] = tool_rounds
 
-                # 根据 include_thinking 决定使用带/不带思考输出的流接口
-                if include_thinking and hasattr(self.llm, 'chat_stream_with_thinking'):
-                    async for chunk in self.llm.chat_stream_with_thinking(messages[:-1] + [{"role": "user", "content": user_query}]):
-                        # chunk 可能是 dict({"thinking":...}) 或 {"content":...} 或纯字符串
-                        if isinstance(chunk, dict):
-                            if 'thinking' in chunk and chunk['thinking']:
-                                yield {"type": "thinking", "content": chunk['thinking'], "timings": None}
-                            elif 'content' in chunk and chunk['content']:
-                                yield {"type": "content", "content": chunk['content'], "timings": None}
-                        else:
-                            yield {"type": "content", "content": chunk, "timings": None}
-                else:
-                    async for chunk in self.llm.chat_stream(messages[:-1] + [{"role": "user", "content": user_query}]):
-                        yield {
-                            "type": "content",
-                            "content": chunk,
-                            "timings": None,
-                        }
+                # LLM 已经在当前轮返回了最终回复内容，直接使用，不再额外调用 LLM
+                final_content = assistant_message.content or ""
+                if final_content:
+                    yield {"type": "content", "content": final_content, "timings": None}
 
                 timings["total"] = round(time.perf_counter() - t_total_start, 3)
                 self._print_timings_summary(timings)

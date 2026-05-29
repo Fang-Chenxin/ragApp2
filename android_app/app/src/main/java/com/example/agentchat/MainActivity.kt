@@ -491,7 +491,7 @@ class MainActivity : AppCompatActivity() {
         val mediaType = "application/json; charset=utf-8".toMediaType()
         val body = requestBodyJson.toRequestBody(mediaType)
         val request = Request.Builder()
-            .url(getBackendUrlWithPath("/api/chat/stream"))
+            .url(getBackendUrlWithPath("/api/chat"))
             .post(body)
             .build()
 

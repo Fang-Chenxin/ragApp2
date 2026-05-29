@@ -40,109 +40,14 @@ class ConversationInfo(BaseModel):
     last_message: str = ""
 
 
-@router.post("/chat", response_model=ChatResponse)
+@router.post("/chat")
 async def chat_endpoint(request: ChatRequest):
-    """聊天接口 - 使用 RAG 与 SQLite 商品搜索进行智能对话，自动保存对话历史
-
-    Args:
-        request: 聊天请求，包含对话历史和当前问题
-
-    Returns:
-        AI 回复
-
-    Raises:
-        HTTPException: 处理过程中的错误
-    """
-    try:
-        # 在运行时动态导入服务（避免模块加载时服务未初始化的问题）
-        from service import tool_chat_service, llm_service, history_service
-        
-        # 确保用户有会话
-        current_conv_id = history_service.ensure_default_conversation(request.user_id)
-        
-        # 如果指定了会话ID，则使用指定的会话
-        if request.conv_id:
-            # 验证会话是否属于该用户
-            convs = history_service.get_conversations(request.user_id)
-            conv_ids = [conv["conv_id"] for conv in convs]
-            if request.conv_id in conv_ids:
-                current_conv_id = request.conv_id
-
-        # 检查 SQLite 商品搜索聊天服务是否初始化
-        if not tool_chat_service:
-            raise HTTPException(
-                status_code=500,
-                detail="SQLite 商品搜索聊天服务未初始化，请检查服务器配置"
-            )
-
-        # 检查 LLM 服务是否连接成功
-        if not llm_service.connected:
-            # 返回模拟回复
-            return ChatResponse(
-                reply=f"您好！我收到了您的消息：'{request.user_query}'。\n\n"
-                      f"这是模拟回复。要使用真实的AI对话功能，请配置 LLM_API_KEY 环境变量。",
-                history_saved=False,
-                conv_id=current_conv_id
-            )
-
-        # 构建对话历史（排除系统消息）
-        history = [
-            {"role": msg.role, "content": msg.content}
-            for msg in request.messages
-            if msg.role != "system"
-        ]
-
-        # 调用带工具调用的服务（自动触发 SQLite 商品数据库搜索）
-        result = await tool_chat_service.chat_with_tools(
-            user_query=request.user_query,
-            conversation_history=history
-        )
-        reply = result["reply"]
-        timings = result.get("timings")
-
-        # 服务端打印耗时日志
-        if timings:
-            print(f"[Timings] user={request.user_id} | 向量检索={timings.get('vector_search', '-')}s | "
-                  f"LLM推理={timings.get('llm_calls', '-')}s({timings.get('llm_rounds', '?')}轮) | "
-                  f"SQLite 工具查询={timings.get('tool_calls', '-')}s({timings.get('tool_rounds', '?')}轮) | "
-                  f"总计={timings.get('total', '-')}s")
-
-        # 保存对话历史
-        try:
-            # 保存用户消息
-            history_service.save_message(request.user_id, current_conv_id, "user", request.user_query)
-            # 保存助手回复
-            history_service.save_message(request.user_id, current_conv_id, "assistant", reply)
-        except Exception as e:
-            print(f"保存对话历史失败: {e}")
-            return ChatResponse(reply=reply, history_saved=False, conv_id=current_conv_id, timings=timings)
-
-        return ChatResponse(reply=reply, history_saved=True, conv_id=current_conv_id, timings=timings)
-
-    except Exception as e:
-        error_msg = str(e)
-        print(f"聊天接口错误: {error_msg}")
-        raise HTTPException(status_code=500, detail=error_msg)
-
-
-@router.post("/chat/stream")
-async def chat_stream_endpoint(request: ChatRequest):
-    """流式聊天接口 - 使用 RAG 与 SQLite 商品搜索进行智能对话，流式返回结果
-
-    Args:
-        request: 聊天请求，包含对话历史和当前问题
-
-    Returns:
-        SSE 流式响应，每个事件包含一个文本片段
-
-    Raises:
-        HTTPException: 处理过程中的错误
-    """
+    """流式聊天接口（与 `/chat/stream` 等价） - 推荐统一使用流式调用以便客户端实时接收预览与调试信息"""
     try:
         from service import tool_chat_service, llm_service, history_service
-        
+
         current_conv_id = history_service.ensure_default_conversation(request.user_id)
-        
+
         if request.conv_id:
             convs = history_service.get_conversations(request.user_id)
             conv_ids = [conv["conv_id"] for conv in convs]
@@ -165,7 +70,7 @@ async def chat_stream_endpoint(request: ChatRequest):
                     "done": True
                 }
                 yield f"data: {json.dumps(data, ensure_ascii=False)}\n\n"
-            
+
             return StreamingResponse(
                 mock_stream(),
                 media_type="text/event-stream",
@@ -186,7 +91,6 @@ async def chat_stream_endpoint(request: ChatRequest):
             full_thinking = ""
             timings = None
             try:
-                # 使用带工具调用的流式服务（自动触发 SQLite 商品数据库搜索）
                 async for chunk in tool_chat_service.chat_with_tools_stream(
                     user_query=request.user_query,
                     conversation_history=history,
@@ -217,7 +121,6 @@ async def chat_stream_endpoint(request: ChatRequest):
                         yield f"data: {json.dumps(data, ensure_ascii=False)}\n\n"
 
                     if chunk_type == "content":
-                        # 流式返回内容片段
                         content = chunk.get("content", "")
                         full_reply += content
                         data = {
@@ -228,7 +131,6 @@ async def chat_stream_endpoint(request: ChatRequest):
                         yield f"data: {json.dumps(data, ensure_ascii=False)}\n\n"
 
                     elif chunk_type == "thinking":
-                        # 实时推送思考片段
                         thinking_content = chunk.get("content", "")
                         if thinking_content:
                             full_thinking += thinking_content
@@ -240,10 +142,8 @@ async def chat_stream_endpoint(request: ChatRequest):
                         yield f"data: {json.dumps(data, ensure_ascii=False)}\n\n"
 
                     elif chunk_type == "done":
-                        # 流式响应完成，获取耗时信息
                         timings = chunk.get("timings")
 
-                        # 服务端打印耗时日志
                         if timings:
                             print(f"[Timings] user={request.user_id} | 向量检索={timings.get('vector_search', '-')}s | "
                                   f"LLM推理={timings.get('llm_calls', '-')}s({timings.get('llm_rounds', '?')}轮) | "
@@ -259,10 +159,8 @@ async def chat_stream_endpoint(request: ChatRequest):
                         }
                         yield f"data: {json.dumps(save_status, ensure_ascii=False)}\n\n"
 
-                        # 保存对话历史（包含可能的思考内容）
                         try:
                             history_service.save_message(request.user_id, current_conv_id, "user", request.user_query)
-                            # 仅在有思考内容时传递 thinking 字段
                             if full_thinking.strip():
                                 history_service.save_message(request.user_id, current_conv_id, "assistant", full_reply, thinking=full_thinking)
                             else:
@@ -272,7 +170,6 @@ async def chat_stream_endpoint(request: ChatRequest):
                             print(f"保存对话历史失败: {e}")
                             history_saved = False
 
-                        # 发送完成标记
                         data = {
                             "content": "",
                             "conv_id": current_conv_id,
@@ -284,13 +181,13 @@ async def chat_stream_endpoint(request: ChatRequest):
                         return
 
                     elif chunk_type == "error":
-                        # 发生错误
                         error_content = chunk.get("content", "未知错误")
                         error_data = {
                             "error": error_content,
                             "done": True
                         }
                         yield f"data: {json.dumps(error_data, ensure_ascii=False)}\n\n"
+
                         return
 
             except Exception as e:
@@ -299,7 +196,7 @@ async def chat_stream_endpoint(request: ChatRequest):
                     "done": True
                 }
                 yield f"data: {json.dumps(error_data, ensure_ascii=False)}\n\n"
-        
+
         return StreamingResponse(
             generate_stream(),
             media_type="text/event-stream",
@@ -311,8 +208,11 @@ async def chat_stream_endpoint(request: ChatRequest):
 
     except Exception as e:
         error_msg = str(e)
-        print(f"流式聊天接口错误: {error_msg}")
+        print(f"聊天接口错误: {error_msg}")
         raise HTTPException(status_code=500, detail=error_msg)
+
+
+# 已统一为单一流式端点 `/chat`，`/chat/stream` 已移除。
 
 
 @router.post("/conversations/{user_id}")
