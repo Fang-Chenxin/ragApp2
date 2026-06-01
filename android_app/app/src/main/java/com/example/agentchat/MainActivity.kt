@@ -7,8 +7,10 @@ import android.net.ConnectivityManager
 import android.net.NetworkCapabilities
 import android.os.Build
 import android.os.Bundle
+import android.util.Log
 import android.view.Menu
 import android.view.MenuItem
+import android.view.MotionEvent
 import android.widget.Button
 import android.widget.EditText
 import android.widget.Toast
@@ -95,6 +97,7 @@ class MainActivity : AppCompatActivity() {
     private var currentConvTitle: String = "智能助手"
 
     companion object {
+        private const val TOUCH_LOG_TAG = "SelectionTouch"
         private const val PREFS_NAME = "chat_prefs"
         private const val KEY_USER_ID = "user_id"
         private const val REQUEST_CONVERSATION = 1001
@@ -127,10 +130,18 @@ class MainActivity : AppCompatActivity() {
         editText = findViewById(R.id.messageEditText)
         val sendButton = findViewById<Button>(R.id.sendButton)
 
-        adapter = ChatAdapter(messages)
-        adapter.attachMarkwon(Markwon.create(this))
         recyclerView.layoutManager = LinearLayoutManager(this)
-        recyclerView.adapter = adapter
+        resetChatAdapter()
+        recyclerView.setOnTouchListener { _, event ->
+            Log.d(TOUCH_LOG_TAG, "RecyclerView.onTouch action=${motionActionName(event)} x=${event.x} y=${event.y}")
+            false
+        }
+        recyclerView.addOnItemTouchListener(object : RecyclerView.SimpleOnItemTouchListener() {
+            override fun onInterceptTouchEvent(rv: RecyclerView, e: MotionEvent): Boolean {
+                Log.d(TOUCH_LOG_TAG, "RecyclerView.onInterceptTouch action=${motionActionName(e)} x=${e.x} y=${e.y}")
+                return false
+            }
+        })
         
         // 应用启动时加载历史记录
         loadHistoryFromServer()
@@ -376,7 +387,19 @@ class MainActivity : AppCompatActivity() {
         
         return savedUserId
     }
-    
+
+    private fun motionActionName(event: MotionEvent): String {
+        return when (event.actionMasked) {
+            MotionEvent.ACTION_DOWN -> "DOWN"
+            MotionEvent.ACTION_UP -> "UP"
+            MotionEvent.ACTION_MOVE -> "MOVE"
+            MotionEvent.ACTION_CANCEL -> "CANCEL"
+            MotionEvent.ACTION_POINTER_DOWN -> "POINTER_DOWN"
+            MotionEvent.ACTION_POINTER_UP -> "POINTER_UP"
+            else -> event.actionMasked.toString()
+        }
+    }
+
     private fun getUniqueDeviceId(): String {
         // 获取唯一的设备标识符
         return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
@@ -390,6 +413,13 @@ class MainActivity : AppCompatActivity() {
             )
             androidId.take(8)
         }
+    }
+
+    private fun resetChatAdapter() {
+        adapter = ChatAdapter(messages)
+        adapter.attachMarkwon(Markwon.create(this))
+        recyclerView.adapter = adapter
+        recyclerView.itemAnimator = null
     }
     
     private fun loadHistoryFromServer() {
@@ -421,11 +451,11 @@ class MainActivity : AppCompatActivity() {
                                 currentConvId = historyResponse.convId
                                 
                                 // 将历史记录加载到消息列表（完全重构建，不依赖内存旧数据）
-                                val oldSize = messages.size
+                                recyclerView.stopScroll()
+                                recyclerView.clearFocus()
+                                recyclerView.recycledViewPool.clear()
+                                recyclerView.adapter = null
                                 messages.clear()
-                                if (oldSize > 0) {
-                                    adapter.notifyItemRangeRemoved(0, oldSize)
-                                }
                                 
                                 // 处理历史记录，完全重新构建消息列表
                                 for (hMsg in historyResponse.history) {
@@ -435,9 +465,10 @@ class MainActivity : AppCompatActivity() {
                                         messages.add(ChatMessage("assistant", hMsg.content, hMsg.thinking, null, true))
                                     }
                                 }
+
+                                resetChatAdapter()
                                 
                                 if (messages.isNotEmpty()) {
-                                    adapter.notifyItemRangeInserted(0, messages.size)
                                     // 延迟滚动，确保布局完成后文本选择状态正确
                                     recyclerView.post {
                                         recyclerView.scrollToPosition(messages.size - 1)

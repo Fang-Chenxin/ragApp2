@@ -34,7 +34,8 @@ class LLMService:
                 limits=httpx.Limits(
                     max_connections=100,
                     max_keepalive_connections=20
-                )
+                ),
+                trust_env=False
             )
             
             self.client = AsyncOpenAI(

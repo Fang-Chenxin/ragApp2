@@ -4,6 +4,7 @@ import android.content.ClipData
 import android.content.ClipboardManager
 import android.text.SpannableString
 import android.text.Spanned
+import android.text.style.ClickableSpan
 import android.text.style.URLSpan
 import android.widget.Toast
 import android.view.LayoutInflater
@@ -13,6 +14,12 @@ import android.widget.TextView
 import androidx.recyclerview.widget.RecyclerView
 import io.noties.markwon.Markwon
 
+
+private fun TextView.keepSelectable() {
+    setTextIsSelectable(true)
+    isLongClickable = true
+    linksClickable = false
+}
 
 class ChatAdapter(private val messages: MutableList<ChatMessage>) : RecyclerView.Adapter<RecyclerView.ViewHolder>() {
 
@@ -60,11 +67,14 @@ class ChatAdapter(private val messages: MutableList<ChatMessage>) : RecyclerView
     class UserMessageViewHolder(itemView: View) : RecyclerView.ViewHolder(itemView) {
         private val textView: TextView = itemView.findViewById(R.id.userMessageText)
         init {
-            textView.setTextIsSelectable(true)
+            textView.keepSelectable()
         }
 
         fun bind(content: String) {
-            textView.text = content
+            if (textView.text.toString() != content) {
+                textView.text = content
+            }
+            textView.keepSelectable()
         }
     }
 
@@ -72,11 +82,17 @@ class ChatAdapter(private val messages: MutableList<ChatMessage>) : RecyclerView
         private val textView: TextView = itemView.findViewById(R.id.assistantMessageText)
         private val timingsText: TextView = itemView.findViewById(R.id.assistantTimingsText)
         private val analysisContainer: View = itemView.findViewById(R.id.analysisContainer)
+        private val analysisHeaderRow: View = itemView.findViewById(R.id.analysisHeaderRow)
         private val analysisHeaderText: TextView = itemView.findViewById(R.id.analysisHeaderText)
         private val analysisTimeText: TextView = itemView.findViewById(R.id.analysisTimeText)
         private val analysisArrowText: TextView = itemView.findViewById(R.id.analysisArrowText)
         private val analysisMessageText: TextView = itemView.findViewById(R.id.analysisMessageText)
         private val copyReplyButton: View = itemView.findViewById(R.id.copyReplyButton)
+
+        init {
+            textView.keepSelectable()
+            analysisMessageText.keepSelectable()
+        }
 
         fun bind(content: String, analysis: String?, timings: Map<String, Any>?, analysisExpanded: Boolean) {
             val trimmedContent = content.trim()
@@ -89,6 +105,7 @@ class ChatAdapter(private val messages: MutableList<ChatMessage>) : RecyclerView
             } else {
                 textView.visibility = View.GONE
                 textView.text = ""
+                textView.keepSelectable()
             }
 
             copyReplyButton.setOnClickListener {
@@ -105,7 +122,7 @@ class ChatAdapter(private val messages: MutableList<ChatMessage>) : RecyclerView
                 renderMarkdown(analysisMessageText, analysisToShow)
                 analysisMessageText.visibility = if (analysisExpanded) View.VISIBLE else View.GONE
                 analysisArrowText.text = if (analysisExpanded) "⌄" else "›"
-                analysisContainer.setOnClickListener {
+                analysisHeaderRow.setOnClickListener {
                     val currentPosition = bindingAdapterPosition
                     if (currentPosition != RecyclerView.NO_POSITION) {
                         val item = this@ChatAdapter.messages[currentPosition]
@@ -114,8 +131,9 @@ class ChatAdapter(private val messages: MutableList<ChatMessage>) : RecyclerView
                     }
                 }
             } else {
-                analysisContainer.setOnClickListener(null)
+                analysisHeaderRow.setOnClickListener(null)
                 analysisMessageText.visibility = View.GONE
+                analysisMessageText.keepSelectable()
             }
 
             if (timings != null && timings.isNotEmpty()) {
@@ -156,14 +174,29 @@ class ChatAdapter(private val messages: MutableList<ChatMessage>) : RecyclerView
             val renderer = markwon ?: Markwon.create(itemView.context).also { markwon = it }
             val spanned = renderer.toMarkdown(markdown)
             val stripped = stripUrlSpans(spanned)
-            // 直接设置文本，确保 TextView 在 ViewHolder 初始化时已启用可选中状态
-            textView.text = stripped
+            if (shouldReplaceRenderedText(textView, stripped)) {
+                textView.text = stripped
+            }
+            textView.keepSelectable()
+        }
+
+        private fun shouldReplaceRenderedText(textView: TextView, rendered: Spanned): Boolean {
+            val currentText = textView.text
+            if (currentText.toString() != rendered.toString()) return true
+            if (currentText !is Spanned) return false
+
+            return currentText.getSpans(0, currentText.length, URLSpan::class.java).isNotEmpty() ||
+                currentText.getSpans(0, currentText.length, ClickableSpan::class.java).isNotEmpty()
         }
 
         private fun stripUrlSpans(spanned: Spanned): SpannableString {
             val result = SpannableString(spanned)
             val urlSpans = result.getSpans(0, result.length, URLSpan::class.java)
             for (span in urlSpans) {
+                result.removeSpan(span)
+            }
+            val clickableSpans = result.getSpans(0, result.length, ClickableSpan::class.java)
+            for (span in clickableSpans) {
                 result.removeSpan(span)
             }
             return result
@@ -183,5 +216,6 @@ class ChatAdapter(private val messages: MutableList<ChatMessage>) : RecyclerView
             return content.startsWith("🧭") || content.startsWith("🔎") || content.startsWith("🧠") ||
                 content.startsWith("⏳") || content.startsWith("🔄")
         }
+
     }
 }

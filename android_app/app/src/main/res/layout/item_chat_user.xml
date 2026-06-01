@@ -11,6 +11,7 @@
         android:layout_width="wrap_content"
         android:layout_height="wrap_content"
         android:textIsSelectable="true"
+        android:longClickable="true"
         android:maxWidth="280dp"
         android:background="#2196F3"
         android:textColor="@android:color/white"
