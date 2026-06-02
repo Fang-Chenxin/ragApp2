@@ -7,12 +7,17 @@ import android.net.ConnectivityManager
 import android.net.NetworkCapabilities
 import android.os.Build
 import android.os.Bundle
+import android.text.InputType
 import android.util.Log
+import android.graphics.Typeface
 import android.view.Menu
 import android.view.MenuItem
 import android.view.MotionEvent
 import android.widget.Button
 import android.widget.EditText
+import android.widget.ImageButton
+import android.widget.LinearLayout
+import android.widget.ScrollView
 import android.widget.Toast
 import android.widget.TextView
 import androidx.appcompat.app.AlertDialog
@@ -41,7 +46,9 @@ data class ChatRequest(
     val messages: List<ChatMessage>,
     @SerializedName("user_query") val userQuery: String,
     @SerializedName("user_id") val userId: String,
-    @SerializedName("conv_id") val convId: String? = null
+    @SerializedName("conv_id") val convId: String? = null,
+    val model: String? = null,
+    @SerializedName("model_config") val modelConfig: ModelOption? = null
 )
 data class ChatResponse(
     val reply: String,
@@ -75,6 +82,17 @@ data class HistoryMessage(
     val timestamp: String? = null,
     val thinking: String? = null
 )
+data class ModelOption(
+    val id: String,
+    val name: String? = null,
+    val source: String? = "server",
+    @SerializedName("base_url") val baseUrl: String? = null,
+    @SerializedName("api_key") val apiKey: String? = null
+)
+data class ModelsResponse(
+    @SerializedName("default_model") val defaultModel: String,
+    val models: List<ModelOption> = emptyList()
+)
 
 
 class MainActivity : AppCompatActivity() {
@@ -82,6 +100,9 @@ class MainActivity : AppCompatActivity() {
     private lateinit var adapter: ChatAdapter
     private lateinit var recyclerView: RecyclerView
     private lateinit var editText: EditText
+    private lateinit var toolbarTitleText: TextView
+    private lateinit var modelSelectorContainer: LinearLayout
+    private lateinit var modelSelectorText: TextView
     
     private val client = OkHttpClient.Builder()
         .connectTimeout(30, java.util.concurrent.TimeUnit.SECONDS)
@@ -95,6 +116,7 @@ class MainActivity : AppCompatActivity() {
     private lateinit var userId: String
     private var currentConvId: String? = null
     private var currentConvTitle: String = "智能助手"
+    private var serverModels: List<ModelOption> = emptyList()
 
     companion object {
         private const val TOUCH_LOG_TAG = "SelectionTouch"
@@ -112,6 +134,13 @@ class MainActivity : AppCompatActivity() {
         return "${getBackendUrl()}$path"
     }
 
+    private fun updateToolbarTitle() {
+        if (::toolbarTitleText.isInitialized) {
+            toolbarTitleText.text = currentConvTitle
+        }
+        supportActionBar?.title = currentConvTitle
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_main)
@@ -119,7 +148,7 @@ class MainActivity : AppCompatActivity() {
         // 初始化 Toolbar
         val toolbar = findViewById<Toolbar>(R.id.toolbar)
         setSupportActionBar(toolbar)
-        supportActionBar?.title = currentConvTitle
+        supportActionBar?.setDisplayShowTitleEnabled(false)
         supportActionBar?.setDisplayHomeAsUpEnabled(true)
         
         // 初始化 SharedPreferences 和用户标识
@@ -128,10 +157,22 @@ class MainActivity : AppCompatActivity() {
         
         recyclerView = findViewById(R.id.chatRecyclerView)
         editText = findViewById(R.id.messageEditText)
+        toolbarTitleText = findViewById(R.id.toolbarTitleText)
+        modelSelectorContainer = findViewById(R.id.modelSelectorContainer)
+        modelSelectorText = findViewById(R.id.modelSelectorText)
+        updateToolbarTitle()
         val sendButton = findViewById<Button>(R.id.sendButton)
 
         recyclerView.layoutManager = LinearLayoutManager(this)
         resetChatAdapter()
+        updateModelSelectorText()
+        loadModelsFromServer()
+        modelSelectorContainer.setOnClickListener {
+            refreshModelsAndShowSelector()
+        }
+        modelSelectorText.setOnClickListener {
+            refreshModelsAndShowSelector()
+        }
         recyclerView.setOnTouchListener { _, event ->
             Log.d(TOUCH_LOG_TAG, "RecyclerView.onTouch action=${motionActionName(event)} x=${event.x} y=${event.y}")
             false
@@ -152,6 +193,12 @@ class MainActivity : AppCompatActivity() {
                 if (userText.isNotEmpty()) {
                     if (!isNetworkAvailable()) {
                         Toast.makeText(this, "网络不可用，请检查网络连接", Toast.LENGTH_SHORT).show()
+                        return@setOnClickListener
+                    }
+                    val incompleteModel = getIncompleteSelectedCustomModel()
+                    if (incompleteModel != null) {
+                        Toast.makeText(this, "请先补全自定义模型的 Base URL 和 API Key", Toast.LENGTH_SHORT).show()
+                        showCustomModelDialog(incompleteModel)
                         return@setOnClickListener
                     }
                     messages.add(ChatMessage("user", userText))
@@ -218,6 +265,7 @@ class MainActivity : AppCompatActivity() {
                         return@setPositiveButton
                     }
                     ConfigManager.setBackendUrl(this, url)
+                    loadModelsFromServer(showError = true)
                     Toast.makeText(this, "服务器地址已保存", Toast.LENGTH_SHORT).show()
                 }
             }
@@ -226,6 +274,427 @@ class MainActivity : AppCompatActivity() {
 
         dialog.show()
         dialog.findViewById<TextView>(android.R.id.message)?.setTextIsSelectable(true)
+    }
+
+    private fun loadModelsFromServer(showError: Boolean = false, onComplete: (() -> Unit)? = null) {
+        val request = Request.Builder()
+            .url(getBackendUrlWithPath("/api/models"))
+            .get()
+            .build()
+
+        client.newCall(request).enqueue(object : Callback {
+            override fun onFailure(call: Call, e: IOException) {
+                runOnUiThread {
+                    updateModelSelectorText()
+                    if (showError) {
+                        Toast.makeText(this@MainActivity, "刷新模型列表失败: ${e.message}", Toast.LENGTH_SHORT).show()
+                    }
+                    onComplete?.invoke()
+                }
+            }
+
+            override fun onResponse(call: Call, response: Response) {
+                response.use {
+                    if (!response.isSuccessful) {
+                        runOnUiThread {
+                            if (showError) {
+                                Toast.makeText(this@MainActivity, "刷新模型列表失败: ${response.code}", Toast.LENGTH_SHORT).show()
+                            }
+                            onComplete?.invoke()
+                        }
+                        return
+                    }
+                    val responseBody = response.body?.string()
+                    try {
+                        val modelsResponse = gson.fromJson(responseBody, ModelsResponse::class.java)
+                        runOnUiThread {
+                            serverModels = modelsResponse.models
+                                .filter { it.id.isNotBlank() }
+                                .map {
+                                    ModelOption(
+                                        id = it.id,
+                                        name = it.name.orEmpty().ifEmpty { it.id },
+                                        source = it.source.orEmpty().ifEmpty { "server" },
+                                        baseUrl = it.baseUrl.orEmpty(),
+                                        apiKey = it.apiKey.orEmpty()
+                                    )
+                                }
+                            val allOptions = getAllModelOptions()
+                            val selectedModel = ConfigManager.getSelectedModel(this@MainActivity)
+                            val selectedStillAvailable = allOptions.any { it.id == selectedModel }
+                            if (!selectedStillAvailable) {
+                                val fallbackModel = modelsResponse.defaultModel
+                                    .takeIf { defaultModel -> allOptions.any { it.id == defaultModel } }
+                                    ?: allOptions.firstOrNull()?.id
+                                if (fallbackModel.isNullOrBlank()) {
+                                    ConfigManager.clearSelectedModel(this@MainActivity)
+                                } else {
+                                    ConfigManager.setSelectedModel(this@MainActivity, fallbackModel)
+                                }
+                            }
+                            updateModelSelectorText()
+                            onComplete?.invoke()
+                        }
+                    } catch (e: Exception) {
+                        e.printStackTrace()
+                        runOnUiThread {
+                            if (showError) {
+                                Toast.makeText(this@MainActivity, "模型列表解析失败", Toast.LENGTH_SHORT).show()
+                            }
+                            onComplete?.invoke()
+                        }
+                    }
+                }
+            }
+        })
+    }
+
+    private fun refreshModelsAndShowSelector() {
+        modelSelectorText.text = "正在刷新模型列表..."
+        loadModelsFromServer(showError = true) {
+            showModelSelectorDialog()
+        }
+    }
+
+    private fun getAllModelOptions(): List<ModelOption> {
+        val customModels = ConfigManager.getCustomModels(this).map {
+            ModelOption(
+                id = it.id,
+                name = it.name.orEmpty().ifEmpty { it.id },
+                source = it.source.orEmpty().ifEmpty { "local" },
+                baseUrl = it.baseUrl.orEmpty(),
+                apiKey = it.apiKey.orEmpty()
+            )
+        }
+        return (serverModels + customModels)
+            .filter { it.id.isNotBlank() }
+            .distinctBy { it.id }
+    }
+
+    private fun getSelectedModelOption(): ModelOption? {
+        val selectedModel = getSelectedModel()
+        return getAllModelOptions().firstOrNull { it.id == selectedModel }
+    }
+
+    private fun getSelectedModel(): String? {
+        return ConfigManager.getSelectedModel(this)?.takeIf { it.isNotBlank() }
+            ?: getAllModelOptions().firstOrNull()?.id
+    }
+
+    private fun updateModelSelectorText() {
+        val selectedModel = getSelectedModel()
+        val selectedOption = getAllModelOptions().firstOrNull { it.id == selectedModel }
+        val label = selectedOption?.name.orEmpty().ifEmpty { selectedModel ?: "选择模型" }
+        val sourceLabel = selectedOption?.sourceLabel()?.takeIf { it.isNotBlank() }
+        modelSelectorText.text = if (sourceLabel != null) "$label · $sourceLabel ▾" else "$label ▾"
+    }
+
+    private fun showModelSelectorDialog() {
+        val serverOptions = serverModels
+            .filter { it.id.isNotBlank() }
+            .distinctBy { it.id }
+        val customOptions = ConfigManager.getCustomModels(this)
+            .map {
+                ModelOption(
+                    id = it.id,
+                    name = it.name.orEmpty().ifEmpty { it.id },
+                    source = it.source.orEmpty().ifEmpty { "local" },
+                    baseUrl = it.baseUrl.orEmpty(),
+                    apiKey = it.apiKey.orEmpty()
+                )
+            }
+            .filter { it.id.isNotBlank() }
+            .filterNot { customOption -> serverOptions.any { it.id == customOption.id } }
+            .distinctBy { it.id }
+
+        val container = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(0, 8, 0, 8)
+        }
+        val scrollView = ScrollView(this).apply {
+            addView(container)
+        }
+
+        lateinit var dialog: AlertDialog
+
+        fun addHeader(title: String) {
+            container.addView(TextView(this).apply {
+                text = title
+                setTypeface(null, Typeface.BOLD)
+                textSize = 13f
+                setTextColor(0xFF666666.toInt())
+                setPadding(48, 28, 48, 8)
+            })
+        }
+
+        fun addStatusRow(message: String) {
+            container.addView(TextView(this).apply {
+                text = message
+                textSize = 14f
+                setTextColor(0xFF777777.toInt())
+                setPadding(48, 16, 48, 24)
+            })
+        }
+
+        fun addModelRow(option: ModelOption, isCustom: Boolean) {
+            val row = LinearLayout(this).apply {
+                orientation = LinearLayout.HORIZONTAL
+                setPadding(48, 16, 32, 16)
+                minimumHeight = 72
+                isClickable = true
+                isFocusable = true
+            }
+            val textContainer = LinearLayout(this).apply {
+                orientation = LinearLayout.VERTICAL
+                layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
+            }
+            val selectedPrefix = if (option.id == getSelectedModel()) "[当前] " else ""
+            textContainer.addView(TextView(this).apply {
+                text = selectedPrefix + option.name.orEmpty().ifEmpty { option.id }
+                textSize = 16f
+                setTextColor(0xFF222222.toInt())
+            })
+            textContainer.addView(TextView(this).apply {
+                text = "${option.id} · ${option.sourceLabel()}"
+                textSize = 12f
+                setTextColor(0xFF777777.toInt())
+            })
+            row.addView(textContainer)
+
+            row.setOnClickListener {
+                if (switchModel(option, requireCompleteConnectionConfig = isCustom)) {
+                    dialog.dismiss()
+                }
+            }
+
+            if (isCustom) {
+                row.addView(createModelActionButton(android.R.drawable.ic_menu_edit, "编辑自定义模型") {
+                    dialog.dismiss()
+                    showCustomModelDialog(option)
+                })
+                row.addView(createModelActionButton(android.R.drawable.ic_menu_delete, "删除自定义模型") {
+                    dialog.dismiss()
+                    showDeleteCustomModelDialog(option)
+                })
+            }
+            container.addView(row)
+        }
+
+        addHeader("服务器提供的模型")
+        if (serverOptions.isNotEmpty()) {
+            serverOptions.forEach { addModelRow(it, isCustom = false) }
+        } else {
+            addStatusRow("服务端未返回可用模型")
+        }
+        if (customOptions.isNotEmpty()) {
+            addHeader("用户自定义模型")
+            customOptions.forEach { addModelRow(it, isCustom = true) }
+        }
+
+        container.addView(TextView(this).apply {
+            text = "+ 添加自定义模型..."
+            textSize = 16f
+            setTextColor(0xFF222222.toInt())
+            setPadding(48, 24, 48, 24)
+            isClickable = true
+            isFocusable = true
+            setOnClickListener {
+                dialog.dismiss()
+                showAddCustomModelDialog()
+            }
+        })
+
+        dialog = AlertDialog.Builder(this)
+            .setTitle("选择对话模型")
+            .setView(scrollView)
+            .setNegativeButton("取消", null)
+            .create()
+        dialog.show()
+    }
+
+    private fun createModelActionButton(iconResId: Int, description: String, onClick: () -> Unit): ImageButton {
+        return ImageButton(this).apply {
+            setImageResource(iconResId)
+            contentDescription = description
+            background = null
+            setPadding(20, 20, 20, 20)
+            layoutParams = LinearLayout.LayoutParams(88, 88)
+            setOnClickListener { onClick() }
+        }
+    }
+
+    private fun switchModel(option: ModelOption, requireCompleteConnectionConfig: Boolean = false): Boolean {
+        if (requireCompleteConnectionConfig && !option.hasCompleteConnectionConfig()) {
+            Toast.makeText(this, "请先补全自定义模型的 Base URL 和 API Key", Toast.LENGTH_SHORT).show()
+            showCustomModelDialog(option)
+            return false
+        }
+        ConfigManager.setSelectedModel(this, option.id)
+        updateModelSelectorText()
+        Toast.makeText(this, "已切换模型：${option.name.orEmpty().ifEmpty { option.id }}", Toast.LENGTH_SHORT).show()
+        return true
+    }
+
+    private fun ModelOption.isLocalModel(): Boolean {
+        return ConfigManager.hasCustomModel(this@MainActivity, id)
+    }
+
+    private fun ModelOption.hasCompleteConnectionConfig(): Boolean {
+        return baseUrl.orEmpty().isNotBlank() && apiKey.orEmpty().isNotBlank()
+    }
+
+    private fun getIncompleteSelectedCustomModel(): ModelOption? {
+        val selectedModelOption = getSelectedModelOption() ?: return null
+        if (serverModels.any { it.id == selectedModelOption.id }) return null
+
+        return selectedModelOption.takeIf {
+            it.isLocalModel() && !it.hasCompleteConnectionConfig()
+        }
+    }
+
+    private fun ModelOption.sourceLabel(): String {
+        val cleanSource = source.orEmpty().trim()
+        return when {
+            cleanSource.equals("server", ignoreCase = true) -> "服务端"
+            cleanSource.equals("local", ignoreCase = true) -> "本机"
+            cleanSource.isBlank() -> "未知来源"
+            else -> cleanSource
+        }
+    }
+
+    private fun showDeleteCustomModelDialog(option: ModelOption) {
+        val modelName = option.name.orEmpty().ifEmpty { option.id }
+        AlertDialog.Builder(this)
+            .setTitle("删除自定义模型")
+            .setMessage("确定删除“$modelName”吗？删除后不会影响服务器提供的模型列表。")
+            .setPositiveButton("删除") { _, _ ->
+                ConfigManager.deleteCustomModel(this, option.id)
+                loadModelsFromServer {
+                    updateModelSelectorText()
+                }
+                Toast.makeText(this, "已删除自定义模型：$modelName", Toast.LENGTH_SHORT).show()
+            }
+            .setNegativeButton("取消", null)
+            .show()
+    }
+
+    private fun showAddCustomModelDialog() {
+        showCustomModelDialog()
+    }
+
+    private fun showCustomModelDialog(existingModel: ModelOption? = null) {
+        val container = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(48, 24, 48, 0)
+        }
+        fun createModelInput(hintText: String, longText: Boolean = false): EditText {
+            return EditText(this).apply {
+                hint = hintText
+                inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_MULTI_LINE
+                setSingleLine(false)
+                minLines = 1
+                maxLines = if (longText) 3 else 2
+                setHorizontallyScrolling(false)
+            }
+        }
+
+        val modelNameEditText = EditText(this).apply {
+            hint = "显示名称，仅用于列表显示，例如 DeepSeek V3"
+            inputType = InputType.TYPE_CLASS_TEXT
+            setText(existingModel?.name.orEmpty().ifEmpty { existingModel?.id.orEmpty() })
+        }
+        val sourceEditText = createModelInput("来源，仅用于显示，例如 OpenAI / DeepSeek / 硅基流动").apply {
+            setText(existingModel?.source.orEmpty().takeIf { it != "local" }.orEmpty())
+        }
+        val modelIdEditText = createModelInput("模型 ID，用于请求，例如 deepseek-chat / gpt-4.1-mini", longText = true).apply {
+            setText(existingModel?.id.orEmpty())
+        }
+        val baseUrlEditText = createModelInput("Base URL，用于请求，例如 https://api.openai.com", longText = true).apply {
+            setText(existingModel?.baseUrl.orEmpty())
+        }
+        val apiKeyEditText = createModelInput("API Key，用于请求，仅保存在本机", longText = true).apply {
+            setText(existingModel?.apiKey.orEmpty())
+        }
+        container.addView(modelNameEditText)
+        container.addView(sourceEditText)
+        container.addView(modelIdEditText)
+        container.addView(baseUrlEditText)
+        container.addView(apiKeyEditText)
+        val scrollView = ScrollView(this).apply {
+            addView(container)
+        }
+
+        val isEditing = existingModel != null
+        val dialog = AlertDialog.Builder(this)
+            .setTitle(if (isEditing) "编辑自定义模型" else "添加自定义模型")
+            .setMessage("支持 OpenAI-compatible 接口。名称和来源仅影响显示；模型 ID、Base URL、API Key 会用于实际请求。Base URL 请填写供应商提供的接口地址。")
+            .setView(scrollView)
+            .setPositiveButton(if (isEditing) "保存" else "添加", null)
+            .setNegativeButton("取消", null)
+            .create()
+
+        dialog.setOnShowListener {
+            dialog.findViewById<TextView>(android.R.id.message)?.setTextIsSelectable(true)
+            dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener {
+                val modelId = modelIdEditText.text.toString().trim()
+                val modelName = modelNameEditText.text.toString().trim().ifEmpty { modelId }
+                val source = sourceEditText.text.toString().trim().ifEmpty { "local" }
+                val baseUrl = baseUrlEditText.text.toString().trim()
+                val apiKey = apiKeyEditText.text.toString().trim()
+                val originalId = existingModel?.id
+
+                when {
+                    modelId.isEmpty() -> {
+                        modelIdEditText.error = "模型 ID 不能为空"
+                        modelIdEditText.requestFocus()
+                        return@setOnClickListener
+                    }
+                    baseUrl.isEmpty() -> {
+                        baseUrlEditText.error = "Base URL 不能为空"
+                        baseUrlEditText.requestFocus()
+                        return@setOnClickListener
+                    }
+                    !baseUrl.startsWith("http://") && !baseUrl.startsWith("https://") -> {
+                        baseUrlEditText.error = "Base URL 必须以 http:// 或 https:// 开头"
+                        baseUrlEditText.requestFocus()
+                        return@setOnClickListener
+                    }
+                    apiKey.isEmpty() -> {
+                        apiKeyEditText.error = "API Key 不能为空"
+                        apiKeyEditText.requestFocus()
+                        return@setOnClickListener
+                    }
+                    originalId != modelId && ConfigManager.hasCustomModel(this, modelId) -> {
+                        modelIdEditText.error = "该模型 ID 已存在"
+                        modelIdEditText.requestFocus()
+                        return@setOnClickListener
+                    }
+                }
+
+                ConfigManager.saveCustomModel(
+                    this,
+                    LocalModelConfig(
+                        id = modelId,
+                        name = modelName,
+                        source = source,
+                        baseUrl = baseUrl,
+                        apiKey = apiKey
+                    ),
+                    originalId
+                )
+                if (!isEditing || ConfigManager.getSelectedModel(this) == originalId) {
+                    ConfigManager.setSelectedModel(this, modelId)
+                }
+                updateModelSelectorText()
+                Toast.makeText(
+                    this,
+                    if (isEditing) "已保存自定义模型：$modelName" else "已添加并切换模型：$modelName",
+                    Toast.LENGTH_SHORT
+                ).show()
+                dialog.dismiss()
+            }
+        }
+        dialog.show()
     }
     
     /**
@@ -253,13 +722,13 @@ class MainActivity : AppCompatActivity() {
                 // 切换到指定会话
                 currentConvId = newConvId
                 currentConvTitle = newTitle ?: "智能助手"
-                supportActionBar?.title = currentConvTitle
+                updateToolbarTitle()
                 loadHistoryFromServer()
             } else {
                 // 新建对话 - 清空页面
                 currentConvId = null
                 currentConvTitle = "智能助手"
-                supportActionBar?.title = currentConvTitle
+                updateToolbarTitle()
                 messages.clear()
                 adapter.notifyDataSetChanged()
             }
@@ -303,7 +772,7 @@ class MainActivity : AppCompatActivity() {
                             runOnUiThread {
                                 currentConvId = convData?.get("conv_id") as? String
                                 currentConvTitle = convData?.get("title") as? String ?: "智能助手"
-                                supportActionBar?.title = currentConvTitle
+                                updateToolbarTitle()
                                 
                                 messages.clear()
                                 adapter.notifyDataSetChanged()
@@ -503,8 +972,19 @@ class MainActivity : AppCompatActivity() {
             .filter { it.role == "user" || it.role == "assistant" }
             .map { ChatMessage(it.role, it.content, null) }
 
+        val selectedModelOption = getSelectedModelOption()
+        val localModelConfig = selectedModelOption?.takeIf {
+            it.baseUrl.orEmpty().isNotBlank() || it.apiKey.orEmpty().isNotBlank()
+        }
         val requestBodyJson = gson.toJson(
-            ChatRequest(cleanedPreviousMessages, lastUserMessage.content, userId, currentConvId)
+            ChatRequest(
+                cleanedPreviousMessages,
+                lastUserMessage.content,
+                userId,
+                currentConvId,
+                getSelectedModel(),
+                localModelConfig,
+            )
         )
         val mediaType = "application/json; charset=utf-8".toMediaType()
         val body = requestBodyJson.toRequestBody(mediaType)

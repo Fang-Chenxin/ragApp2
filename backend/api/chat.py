@@ -1,13 +1,17 @@
 """API 路由层 - 聊天相关接口"""
 from fastapi import APIRouter, HTTPException, Header
 from fastapi.responses import StreamingResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from typing import List, Optional, Dict, Any
 from config.logging_config import get_logger
+import fnmatch
+import httpx
 import json
+import re
 
 logger = get_logger("api.chat")
 router = APIRouter(prefix="/api", tags=["chat"])
+_DISCOVERED_MODEL_CONFIGS: Dict[str, Dict[str, str]] = {}
 
 
 class ChatMessage(BaseModel):
@@ -16,12 +20,23 @@ class ChatMessage(BaseModel):
     content: str
 
 
+class ModelConnectionConfig(BaseModel):
+    """客户端本地模型连接配置"""
+    id: str
+    name: Optional[str] = None
+    source: str = "local"
+    base_url: Optional[str] = None
+    api_key: Optional[str] = None
+
+
 class ChatRequest(BaseModel):
     """聊天请求模型"""
     messages: List[ChatMessage]
     user_query: str
     user_id: Optional[str] = "default"  # 用户标识
     conv_id: Optional[str] = None  # 会话ID（可选，不指定则使用当前会话）
+    model: Optional[str] = None  # 本轮对话使用的模型 ID
+    llm_config: Optional[ModelConnectionConfig] = Field(default=None, alias="model_config")  # 客户端本地模型接入配置
 
 
 class ChatResponse(BaseModel):
@@ -39,6 +54,194 @@ class ConversationInfo(BaseModel):
     created_at: str
     message_count: int
     last_message: str = ""
+
+
+class ModelInfo(BaseModel):
+    """可选模型信息"""
+    id: str
+    name: str
+    source: str = "server"
+
+
+class ModelsResponse(BaseModel):
+    """模型清单响应"""
+    default_model: str
+    models: List[ModelInfo]
+
+
+def _public_model_info(item: Dict[str, str]) -> ModelInfo:
+    return ModelInfo(
+        id=item["id"],
+        name=item["name"],
+        source=item["source"],
+    )
+
+
+def _as_string_list(value: Any) -> List[str]:
+    if isinstance(value, str):
+        return [value]
+    if isinstance(value, list):
+        return [str(item) for item in value if str(item).strip()]
+    return []
+
+
+def _matches_any_pattern(model_id: str, patterns: List[str]) -> bool:
+    return any(fnmatch.fnmatch(model_id, pattern) for pattern in patterns)
+
+
+def _normalize_model_family(model_id: str) -> str:
+    """把常见日期/上下文/参数后缀折叠为同一模型族。"""
+    normalized = model_id.lower()
+    normalized = re.sub(r"[-_:](20\d{2}[-_]?\d{2}[-_]?\d{2}|\d{6,8})$", "", normalized)
+    normalized = re.sub(r"[-_:](4k|8k|16k|32k|64k|128k|256k|1m)$", "", normalized)
+    normalized = re.sub(r"[-_:](fp8|fp16|bf16|int4|int8|q4|q8)$", "", normalized)
+    normalized = re.sub(r"[-_:](free|latest|preview|beta|stable)$", "", normalized)
+    return normalized
+
+
+def _filter_discovered_models(
+    models: List[Dict[str, str]],
+    *,
+    allow_models: List[str],
+    deny_models: List[str],
+    collapse_variants: bool,
+    ark_endpoint_only: bool,
+) -> List[Dict[str, str]]:
+    filtered: List[Dict[str, str]] = []
+    for model in models:
+        model_id = model["id"]
+        if ark_endpoint_only and not model_id.startswith("ep-"):
+            continue
+        if allow_models and not _matches_any_pattern(model_id, allow_models):
+            continue
+        if deny_models and _matches_any_pattern(model_id, deny_models):
+            continue
+        filtered.append(model)
+
+    if not collapse_variants:
+        return filtered
+
+    by_family: Dict[str, Dict[str, str]] = {}
+    for model in filtered:
+        family = _normalize_model_family(model["id"])
+        current = by_family.get(family)
+        if current is None or len(model["id"]) < len(current["id"]):
+            by_family[family] = model
+    return list(by_family.values())
+
+
+async def _discover_models_from_sources() -> List[Dict[str, str]]:
+    """从服务端配置的 OpenAI-compatible 来源发现模型，并缓存其连接配置。"""
+    from config.settings import settings
+
+    discovered: List[Dict[str, str]] = []
+    for source in settings.llm_model_discovery_sources:
+        models_url = source["base_url"].rstrip("/") + "/models"
+        try:
+            async with httpx.AsyncClient(timeout=20.0, trust_env=False) as client:
+                response = await client.get(
+                    models_url,
+                    headers={"Authorization": f"Bearer {source['api_key']}"},
+                )
+                response.raise_for_status()
+                payload = response.json()
+        except Exception as exc:
+            logger.warning("发现模型失败 source=%s url=%s error=%s", source["source"], models_url, exc)
+            continue
+
+        data = payload.get("data", []) if isinstance(payload, dict) else []
+        source_models: List[Dict[str, str]] = []
+        for model in data:
+            if isinstance(model, str):
+                model_id = model.strip()
+                model_name = model_id
+            elif isinstance(model, dict):
+                model_id = str(model.get("id") or "").strip()
+                model_name = str(model.get("name") or model.get("id") or model_id).strip()
+            else:
+                continue
+
+            if not model_id:
+                continue
+
+            config = {
+                "id": model_id,
+                "name": model_name or model_id,
+                "source": source["source"],
+                "base_url": source["base_url"],
+                "api_key": source["api_key"],
+            }
+            source_models.append(config)
+
+        source_models = _filter_discovered_models(
+            source_models,
+            allow_models=_as_string_list(source.get("allow_models")),
+            deny_models=_as_string_list(source.get("deny_models")),
+            collapse_variants=bool(source.get("collapse_variants", True)),
+            ark_endpoint_only=bool(source.get("ark_endpoint_only", False)),
+        )
+
+        for config in source_models:
+            _DISCOVERED_MODEL_CONFIGS[config["id"]] = config
+            discovered.append(config)
+
+    return discovered
+
+
+async def _get_server_model_config(model_id: Optional[str]) -> Optional[Dict[str, str]]:
+    from config.settings import settings
+
+    server_model_config = settings.get_llm_model_option(model_id)
+    if server_model_config:
+        return server_model_config
+
+    if model_id and model_id in _DISCOVERED_MODEL_CONFIGS:
+        return _DISCOVERED_MODEL_CONFIGS[model_id]
+
+    if model_id:
+        await _discover_models_from_sources()
+        return _DISCOVERED_MODEL_CONFIGS.get(model_id)
+
+    return None
+
+
+async def _get_available_server_models() -> List[Dict[str, str]]:
+    """返回客户端可选择的服务端模型，已去重。"""
+    from config.settings import settings
+
+    all_models = settings.llm_model_options + await _discover_models_from_sources()
+    seen: set[str] = set()
+    available: List[Dict[str, str]] = []
+    for item in all_models:
+        model_id = item["id"]
+        if model_id in seen:
+            continue
+        seen.add(model_id)
+        available.append(item)
+    return available
+
+
+def _select_default_model(models: List[Dict[str, str]], configured_default: str) -> str:
+    """默认模型必须来自可选列表；否则选第一个可用项，避免返回不可调用的幽灵默认值。"""
+    if configured_default and any(item["id"] == configured_default for item in models):
+        return configured_default
+    if models:
+        return models[0]["id"]
+    return ""
+
+
+@router.get("/models", response_model=ModelsResponse)
+async def list_models():
+    """返回服务端固定可选模型，客户端可在本地追加自定义模型。"""
+    from config.settings import settings
+
+    available_models = await _get_available_server_models()
+    public_models = [_public_model_info(item) for item in available_models]
+
+    return ModelsResponse(
+        default_model=_select_default_model(available_models, settings.llm_model),
+        models=public_models,
+    )
 
 
 @router.post("/chat")
@@ -61,7 +264,48 @@ async def chat_endpoint(request: ChatRequest):
                 detail="SQLite 商品搜索聊天服务未初始化，请检查服务器配置"
             )
 
-        if not llm_service.connected:
+        server_model_config = await _get_server_model_config(request.model)
+        local_model_config = request.llm_config.model_dump() if request.llm_config else None
+        active_model_config = local_model_config or server_model_config
+
+        if request.model and not active_model_config:
+            async def unknown_model_stream():
+                data = {
+                    "error": f"模型未配置或未发现：{request.model}。请刷新模型列表并选择可用模型。",
+                    "done": True
+                }
+                yield f"data: {json.dumps(data, ensure_ascii=False)}\n\n"
+
+            return StreamingResponse(
+                unknown_model_stream(),
+                media_type="text/event-stream",
+                headers={
+                    "Cache-Control": "no-cache",
+                    "Connection": "keep-alive",
+                }
+            )
+
+        if not request.model and not active_model_config:
+            from config.settings import settings
+
+            if settings.available_llm_models:
+                async def no_model_stream():
+                    data = {
+                        "error": "未找到可用模型。请检查 AVAILABLE_LLM_MODELS、api_key_env 和模型发现过滤配置。",
+                        "done": True
+                    }
+                    yield f"data: {json.dumps(data, ensure_ascii=False)}\n\n"
+
+                return StreamingResponse(
+                    no_model_stream(),
+                    media_type="text/event-stream",
+                    headers={
+                        "Cache-Control": "no-cache",
+                        "Connection": "keep-alive",
+                    }
+                )
+
+        if not llm_service.connected and not (active_model_config and active_model_config.get("api_key")):
             async def mock_stream():
                 mock_reply = f"您好！我收到了您的消息：'{request.user_query}'。\n\n这是模拟回复。要使用真实的AI对话功能，请配置 LLM_API_KEY 环境变量。"
                 data = {
@@ -96,6 +340,8 @@ async def chat_endpoint(request: ChatRequest):
                 async for chunk in tool_chat_service.chat_with_tools_stream(
                     user_query=request.user_query,
                     conversation_history=history,
+                    model=request.model,
+                    model_config=active_model_config,
                 ):
                     chunk_type = chunk.get("type")
 

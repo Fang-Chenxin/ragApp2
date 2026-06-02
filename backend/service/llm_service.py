@@ -59,6 +59,64 @@ class LLMService:
             raise
 
     @staticmethod
+    def _create_http_client() -> httpx.AsyncClient:
+        return httpx.AsyncClient(
+            timeout=httpx.Timeout(
+                connect=30.0,
+                read=120.0,
+                write=30.0,
+                pool=30.0
+            ),
+            limits=httpx.Limits(
+                max_connections=100,
+                max_keepalive_connections=20
+            ),
+            trust_env=False
+        )
+
+    def _resolve_client(
+        self,
+        model_config: Optional[Dict[str, Any]] = None,
+    ) -> tuple[AsyncOpenAI, Optional[httpx.AsyncClient]]:
+        """返回本次调用使用的客户端；本地模型配置会创建临时客户端。"""
+        api_key = (model_config or {}).get("api_key") or settings.llm_api_key
+        base_url = (model_config or {}).get("base_url") or self.base_url
+        needs_temp_client = bool(model_config) and (
+            base_url != self.base_url or api_key != settings.llm_api_key
+        )
+
+        if api_key and needs_temp_client:
+            http_client = self._create_http_client()
+            return (
+                AsyncOpenAI(
+                    api_key=api_key,
+                    base_url=base_url,
+                    http_client=http_client,
+                ),
+                http_client,
+            )
+
+        if not self.client:
+            if api_key:
+                http_client = self._create_http_client()
+                return (
+                    AsyncOpenAI(
+                        api_key=api_key,
+                        base_url=base_url,
+                        http_client=http_client,
+                    ),
+                    http_client,
+                )
+            raise RuntimeError("LLM 客户端未初始化，请配置 LLM_API_KEY")
+
+        return self.client, None
+
+    @staticmethod
+    async def _close_temp_http_client(http_client: Optional[httpx.AsyncClient]):
+        if http_client:
+            await http_client.aclose()
+
+    @staticmethod
     def _mask_api_key(api_key: str) -> str:
         """对 API Key 进行脱敏处理，只显示前后各4位"""
         if len(api_key) <= 8:
@@ -84,7 +142,9 @@ class LLMService:
     async def chat(
         self,
         messages: List[Dict[str, str]],
-        temperature: Optional[float] = None
+        temperature: Optional[float] = None,
+        model: Optional[str] = None,
+        model_config: Optional[Dict[str, Any]] = None,
     ) -> str:
         """调用大模型生成回复
 
@@ -95,16 +155,17 @@ class LLMService:
         Returns:
             模型生成的回复内容
         """
-        if not self.client:
-            raise RuntimeError("LLM 客户端未初始化，请配置 LLM_API_KEY")
-
         temp = temperature or settings.rag_temperature
+        client, temp_http_client = self._resolve_client(model_config)
 
-        response = await self.client.chat.completions.create(
-            model=self.model,
-            messages=messages,
-            temperature=temp
-        )
+        try:
+            response = await client.chat.completions.create(
+                model=(model_config or {}).get("id") or model or self.model,
+                messages=messages,
+                temperature=temp
+            )
+        finally:
+            await self._close_temp_http_client(temp_http_client)
 
         return response.choices[0].message.content or "抱歉，我现在无法回答您的问题。"
 
@@ -116,6 +177,8 @@ class LLMService:
         temperature: Optional[float] = None,
         thinking_type: Optional[str] = "enabled",
         reasoning_effort: Optional[str] = "medium",
+        model: Optional[str] = None,
+        model_config: Optional[Dict[str, Any]] = None,
     ) -> Any:
         """调用大模型，支持原生 function calling
 
@@ -128,13 +191,11 @@ class LLMService:
         Returns:
             完整的 ChatCompletion response 对象
         """
-        if not self.client:
-            raise RuntimeError("LLM 客户端未初始化，请配置 LLM_API_KEY")
-
         temp = temperature or settings.rag_temperature
+        client, temp_http_client = self._resolve_client(model_config)
 
         kwargs: Dict[str, Any] = {
-            "model": self.model,
+            "model": (model_config or {}).get("id") or model or self.model,
             "messages": messages,
             "temperature": temp,
         }
@@ -144,12 +205,17 @@ class LLMService:
 
         self._apply_thinking_params(kwargs, thinking_type, reasoning_effort)
 
-        return await self.client.chat.completions.create(**kwargs)
+        try:
+            return await client.chat.completions.create(**kwargs)
+        finally:
+            await self._close_temp_http_client(temp_http_client)
 
     async def chat_stream(
         self,
         messages: List[Dict[str, str]],
-        temperature: Optional[float] = None
+        temperature: Optional[float] = None,
+        model: Optional[str] = None,
+        model_config: Optional[Dict[str, Any]] = None,
     ) -> AsyncGenerator[str, None]:
         """流式调用大模型生成回复
 
@@ -160,21 +226,22 @@ class LLMService:
         Yields:
             模型生成的回复内容片段
         """
-        if not self.client:
-            raise RuntimeError("LLM 客户端未初始化，请配置 LLM_API_KEY")
-
         temp = temperature or settings.rag_temperature
+        client, temp_http_client = self._resolve_client(model_config)
 
-        stream = await self.client.chat.completions.create(
-            model=self.model,
-            messages=messages,
-            temperature=temp,
-            stream=True
-        )
+        try:
+            stream = await client.chat.completions.create(
+                model=(model_config or {}).get("id") or model or self.model,
+                messages=messages,
+                temperature=temp,
+                stream=True
+            )
 
-        async for chunk in stream:
-            if chunk.choices[0].delta.content is not None:
-                yield chunk.choices[0].delta.content
+            async for chunk in stream:
+                if chunk.choices[0].delta.content is not None:
+                    yield chunk.choices[0].delta.content
+        finally:
+            await self._close_temp_http_client(temp_http_client)
 
     async def chat_stream_with_thinking(
         self,
@@ -182,6 +249,8 @@ class LLMService:
         temperature: Optional[float] = None,
         thinking_type: Optional[str] = "enabled",
         reasoning_effort: Optional[str] = "medium",
+        model: Optional[str] = None,
+        model_config: Optional[Dict[str, Any]] = None,
     ) -> AsyncGenerator[Dict[str, str], None]:
         """流式调用大模型生成回复，包含思考过程
 
@@ -192,50 +261,51 @@ class LLMService:
         Yields:
             Dict包含 "thinking" 或 "content" 键
         """
-        if not self.client:
-            raise RuntimeError("LLM 客户端未初始化，请配置 LLM_API_KEY")
-
         temp = temperature or settings.rag_temperature
+        client, temp_http_client = self._resolve_client(model_config)
 
         stream_kwargs: Dict[str, Any] = {
-            "model": self.model,
+            "model": (model_config or {}).get("id") or model or self.model,
             "messages": messages,
             "temperature": temp,
             "stream": True,
         }
         self._apply_thinking_params(stream_kwargs, thinking_type, reasoning_effort)
 
-        stream = await self.client.chat.completions.create(**stream_kwargs)
+        try:
+            stream = await client.chat.completions.create(**stream_kwargs)
 
-        async for chunk in stream:
-            delta = chunk.choices[0].delta
-            
-            # 兼容多种主流思考过程字段名 (reasoning, reasoning_content, thought 等)
-            thinking_content = None
-            if hasattr(delta, 'reasoning') and delta.reasoning:
-                thinking_content = delta.reasoning
-            elif hasattr(delta, 'reasoning_content') and delta.reasoning_content:
-                thinking_content = delta.reasoning_content
-            elif hasattr(delta, 'thought') and delta.thought:
-                thinking_content = delta.thought
-            
-            # 也尝试从 chunk 的原始字典结构中查找思考字段
-            if not thinking_content:
-                chunk_dict = chunk.model_dump(exclude_unset=True) if hasattr(chunk, 'model_dump') else chunk
-                choices = chunk_dict.get('choices', [])
-                if choices and len(choices) > 0:
-                    d = choices[0].get('delta', {}) if isinstance(choices[0], dict) else {}
-                    for key in ['reasoning', 'reasoning_content', 'thought']:
-                        if key in d and d[key]:
-                            thinking_content = d[key]
-                            break
-            
-            if thinking_content:
-                yield {"thinking": thinking_content}
-            
-            # 提取内容
-            if delta.content:
-                yield {"content": delta.content}
+            async for chunk in stream:
+                delta = chunk.choices[0].delta
+                
+                # 兼容多种主流思考过程字段名 (reasoning, reasoning_content, thought 等)
+                thinking_content = None
+                if hasattr(delta, 'reasoning') and delta.reasoning:
+                    thinking_content = delta.reasoning
+                elif hasattr(delta, 'reasoning_content') and delta.reasoning_content:
+                    thinking_content = delta.reasoning_content
+                elif hasattr(delta, 'thought') and delta.thought:
+                    thinking_content = delta.thought
+                
+                # 也尝试从 chunk 的原始字典结构中查找思考字段
+                if not thinking_content:
+                    chunk_dict = chunk.model_dump(exclude_unset=True) if hasattr(chunk, 'model_dump') else chunk
+                    choices = chunk_dict.get('choices', [])
+                    if choices and len(choices) > 0:
+                        d = choices[0].get('delta', {}) if isinstance(choices[0], dict) else {}
+                        for key in ['reasoning', 'reasoning_content', 'thought']:
+                            if key in d and d[key]:
+                                thinking_content = d[key]
+                                break
+                
+                if thinking_content:
+                    yield {"thinking": thinking_content}
+                
+                # 提取内容
+                if delta.content:
+                    yield {"content": delta.content}
+        finally:
+            await self._close_temp_http_client(temp_http_client)
 
     def close(self):
         """关闭 LLM 客户端"""

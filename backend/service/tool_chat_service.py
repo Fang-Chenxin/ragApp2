@@ -257,7 +257,9 @@ class ToolChatService:
         self,
         user_query: str,
         conversation_history: Optional[List[Dict[str, str]]] = None,
-        max_tool_calls: int = 5
+        max_tool_calls: int = 5,
+        model: Optional[str] = None,
+        model_config: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         """使用原生 function calling 进行对话，返回 reply 和各环节耗时"""
         timings: Dict[str, Any] = {}
@@ -268,9 +270,10 @@ class ToolChatService:
         logger.debug("  用户问题: %s", user_query)
         logger.debug("  历史消息数: %s", len(conversation_history) if conversation_history else 0)
         logger.debug("  最大工具调用轮数: %s", max_tool_calls)
+        logger.debug("  使用模型: %s", model or (model_config or {}).get("id") or getattr(self.llm, "model", "default"))
 
 
-        if not self.llm.connected:
+        if not self.llm.connected and not (model_config or {}).get("api_key"):
             logger.warning("  LLM 服务未连接")
             return {
                 "reply": "LLM 服务未连接，请检查 LLM_API_KEY 配置。",
@@ -317,6 +320,8 @@ class ToolChatService:
                     messages=messages,
                     tools=tools,
                     tool_choice="auto",
+                    model=model,
+                    model_config=model_config,
                 )
             except Exception as e:
                 elapsed = round(time.perf_counter() - t1, 3)
@@ -433,6 +438,8 @@ class ToolChatService:
                 messages=messages,
                 tools=tools,
                 tool_choice="none",
+                model=model,
+                model_config=model_config,
             )
             reply = final_response.choices[0].message.content or ""
             elapsed = round(time.perf_counter() - t3, 3)
@@ -471,6 +478,8 @@ class ToolChatService:
         user_query: str,
         conversation_history: Optional[List[Dict[str, str]]] = None,
         max_tool_calls: int = 5,
+        model: Optional[str] = None,
+        model_config: Optional[Dict[str, Any]] = None,
     ) -> AsyncGenerator[Dict[str, Any], None]:
         """使用原生 function calling 进行对话，流式返回结果"""
         timings: Dict[str, Any] = {}
@@ -480,8 +489,9 @@ class ToolChatService:
         logger.debug("  用户问题: %s", user_query)
         logger.debug("  历史消息数: %s", len(conversation_history) if conversation_history else 0)
         logger.debug("  最大工具调用轮数: %s", max_tool_calls)
+        logger.debug("  使用模型: %s", model or (model_config or {}).get("id") or getattr(self.llm, "model", "default"))
 
-        if not self.llm.connected:
+        if not self.llm.connected and not (model_config or {}).get("api_key"):
             logger.warning("  LLM 服务未连接")
             yield {
                 "type": "error",
@@ -509,7 +519,7 @@ class ToolChatService:
         t_analysis_start = time.perf_counter()
         try:
             analysis_messages = self._build_need_analysis_messages(context_text, conversation_history, user_query)
-            async for chunk in self.llm.chat_stream(analysis_messages):
+            async for chunk in self.llm.chat_stream(analysis_messages, model=model, model_config=model_config):
                 if chunk:
                     analysis_text += chunk
         except Exception as exc:
@@ -563,6 +573,8 @@ class ToolChatService:
                     messages=messages,
                     tools=tools,
                     tool_choice="auto",
+                    model=model,
+                    model_config=model_config,
                 )
             except Exception as e:
                 elapsed = round(time.perf_counter() - t1, 3)
@@ -764,7 +776,7 @@ class ToolChatService:
         final_messages = self._build_final_recommendation_messages(system_prompt, analysis_text.strip(), selected_products) + final_messages
 
         try:
-            async for chunk in self.llm.chat_stream(final_messages):
+            async for chunk in self.llm.chat_stream(final_messages, model=model, model_config=model_config):
                 yield {
                     "type": "content",
                     "content": chunk,

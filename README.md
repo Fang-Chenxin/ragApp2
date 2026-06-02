@@ -3,7 +3,7 @@
 ## 技术架构
 ✅ **后端**: FastAPI (Python)
 ✅ **向量数据库**: Chroma (本地持久化)
-✅ **大模型**: Doubao-Seed-2.0-lite / 火山方舟
+✅ **大模型**: 火山方舟 / OpenAI-compatible 多模型接入
 ✅ **移动端**: Kotlin 100% 原生 Android 应用
 ✅ **非 Web 套壳方案，完全原生体验**
 
@@ -60,11 +60,16 @@ cp .env.example .env
 # 编辑 .env 文件，设置 LLM_API_KEY 等配置
 ```
 
+### 服务端模型配置
+后端可通过 `available_llm_models` 声明 Android 端可选模型，并支持用 `api_key_env` 从环境变量或 `backend/.env` 读取 API Key。客户端会通过 `/api/models` 获取模型列表。
+
 ## Android 原生应用开发
 用 Android Studio 直接打开 `android_app/` 目录
 - 点击右上角的设置图标可动态配置后端服务器地址
 - 地址保存后无需重新编译即可生效
 - 支持 http:// 和 https:// 协议的地址
+- 聊天页“当前模型”区域可刷新服务端模型列表并一键切换
+- 可添加、编辑、删除本机自定义 OpenAI-compatible 模型配置
 
 ## 功能特性
 - ✅ 多对话管理（新建、切换、删除对话）
@@ -72,3 +77,5 @@ cp .env.example .env
 - ✅ 需求分析展示
 - ✅ 流式响应支持
 - ✅ 后端地址可配置化
+- ✅ 服务端模型选择
+- ✅ 本机自定义模型管理

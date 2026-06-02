@@ -42,14 +42,14 @@ class DummyLLM:
         self.chat_stream_calls = 0
         self.chat_with_tools_calls = 0
 
-    async def chat_stream(self, messages):
+    async def chat_stream(self, messages, model=None, model_config=None):
         self.chat_stream_calls += 1
         if self.chat_stream_calls == 1:
             yield "内部需求分析：用户想先快速确认需求方向。"
         else:
             yield "最终回复：我可以帮你继续细化需求。"
 
-    async def chat_with_tools(self, messages, tools=None, tool_choice="auto", temperature=None, thinking_type="enabled", reasoning_effort="medium"):
+    async def chat_with_tools(self, messages, tools=None, tool_choice="auto", temperature=None, thinking_type="enabled", reasoning_effort="medium", model=None, model_config=None):
         self.chat_with_tools_calls += 1
         return DummyResponse("最终回复：我可以帮你继续细化需求。")
 
