@@ -189,8 +189,13 @@ class Settings(BaseSettings):
     rag_temperature: float = 0.7  # LLM 生成温度
     rag_vector_search_timeout_seconds: float = 3.0  # 向量检索超时时间，避免 Chroma 异常阻塞聊天
     rag_llm_rerank_enabled: bool = True  # 是否使用 LLM 检查 RAG 片段正确性并重排
-    rag_llm_rerank_timeout_seconds: float = 10.0  # LLM 检查 RAG 片段的超时时间
+    rag_llm_rerank_timeout_seconds: float = 6.0  # LLM 检查 RAG 片段的超时时间
+    rag_llm_rerank_max_candidates: int = 2  # 送入 LLM 检查的最多候选片段数量
+    rag_llm_rerank_skip_single_candidate: bool = True  # 只有 1 条候选时跳过 LLM 检查，直接使用向量结果
+    rag_llm_rerank_max_tokens: int = 260  # 限制检查器输出长度，减少等待时间
+    rag_trace_content_chars: int = 800  # RAG 日志中保留的知识片段原文字数
     rag_llm_rerank_min_score: int = 2  # 低于该分数的片段会被过滤；1-5 分
+    tool_chat_parallel_enabled: bool = True  # 导购流程是否并行执行需求分析、首轮工具规划和商品直查
 
     # 日志配置
     log_level: str = "DEBUG"  # 文件日志级别：DEBUG / INFO / WARNING / ERROR

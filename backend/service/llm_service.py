@@ -145,6 +145,7 @@ class LLMService:
         temperature: Optional[float] = None,
         model: Optional[str] = None,
         model_config: Optional[Dict[str, Any]] = None,
+        max_tokens: Optional[int] = None,
     ) -> str:
         """调用大模型生成回复
 
@@ -159,11 +160,14 @@ class LLMService:
         client, temp_http_client = self._resolve_client(model_config)
 
         try:
-            response = await client.chat.completions.create(
-                model=(model_config or {}).get("id") or model or self.model,
-                messages=messages,
-                temperature=temp
-            )
+            kwargs: Dict[str, Any] = {
+                "model": (model_config or {}).get("id") or model or self.model,
+                "messages": messages,
+                "temperature": temp,
+            }
+            if max_tokens:
+                kwargs["max_tokens"] = max_tokens
+            response = await client.chat.completions.create(**kwargs)
         finally:
             await self._close_temp_http_client(temp_http_client)
 

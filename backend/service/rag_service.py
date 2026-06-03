@@ -93,6 +93,52 @@ class VectorStore:
         )
 
     @staticmethod
+    def infer_query_category(query_text: str) -> Optional[str]:
+        """Infer the product category scope from explicit shopping terms."""
+        query = (query_text or "").lower()
+        category_keywords = [
+            (
+                "数码电子",
+                [
+                    "数码", "电子", "手机", "平板", "电脑", "笔记本", "耳机", "ipad", "macbook",
+                    "屏幕", "芯片", "续航", "高刷", "降噪", "键盘", "鼠标",
+                ],
+            ),
+            (
+                "服饰运动",
+                [
+                    "服饰", "运动", "裤子", "鞋", "衣服", "衣物", "服装", "穿搭", "上衣", "t恤",
+                    "短袖", "长袖", "卫衣", "外套", "瑜伽裤", "徒步鞋", "跑步", "训练", "健身",
+                    "力量训练", "速干", "透气", "帽", "背包", "腰包",
+                ],
+            ),
+            (
+                "美妆护肤",
+                [
+                    "美妆", "护肤", "彩妆", "精华", "面霜", "眼霜", "洁面", "乳液", "眉笔",
+                    "粉底", "口红", "防晒", "散粉", "面膜", "控油", "保湿", "修护",
+                ],
+            ),
+            (
+                "食品饮料",
+                [
+                    "食品", "饮料", "泡面", "茶饮", "气泡水", "方便面", "生活", "零食", "吃的",
+                    "喝的", "咖啡", "牛奶", "饼干", "薯片", "果汁",
+                ],
+            ),
+        ]
+
+        scores: Dict[str, int] = {}
+        for category, keywords in category_keywords:
+            score = sum(1 for keyword in keywords if keyword.lower() in query)
+            if score:
+                scores[category] = score
+
+        if not scores:
+            return None
+        return max(scores.items(), key=lambda item: item[1])[0]
+
+    @staticmethod
     def format_results_as_context(results: List[Dict[str, Any]]) -> str:
         """将带来源的检索结果格式化为可注入 prompt 的上下文。"""
         lines: List[str] = []
@@ -100,7 +146,6 @@ class VectorStore:
             metadata = item.get("metadata") or {}
             source_parts = []
             for key, label in [
-                ("product_id", "商品ID"),
                 ("title", "商品"),
                 ("brand", "品牌"),
                 ("category", "分类"),
@@ -116,21 +161,46 @@ class VectorStore:
 
         return "\n\n".join(lines)
 
-    def query_with_sources(self, query_text: str, top_k: Optional[int] = None) -> List[Dict[str, Any]]:
+    def query_with_sources(
+        self,
+        query_text: str,
+        top_k: Optional[int] = None,
+        category: Optional[str] = None,
+    ) -> List[Dict[str, Any]]:
         """查询相似文档，并返回文档内容、距离和商品来源 metadata。"""
         if not self.collection:
             raise RuntimeError("向量数据库未初始化")
 
         k = top_k or settings.rag_top_k
+        inferred_category = category or self.infer_query_category(query_text)
+        where_filter = {"category": inferred_category} if inferred_category else None
 
-        results = self.collection.query(
-            query_texts=[query_text],
-            n_results=k,
-            include=["documents", "metadatas", "distances"],
-        )
+        query_kwargs: Dict[str, Any] = {
+            "query_texts": [query_text],
+            "n_results": k,
+            "include": ["documents", "metadatas", "distances"],
+        }
+        if where_filter:
+            query_kwargs["where"] = where_filter
+
+        results = self.collection.query(**query_kwargs)
 
         documents = results.get("documents") or []
+        if (not documents or not documents[0]) and where_filter:
+            logger.info(
+                "[RAGVectorSearch] query=%s | category=%s | filtered_count=0 | fallback=unfiltered",
+                query_text,
+                inferred_category,
+            )
+            query_kwargs.pop("where", None)
+            results = self.collection.query(**query_kwargs)
+            documents = results.get("documents") or []
         if not documents or not documents[0]:
+            logger.info(
+                "[RAGVectorSearch] query=%s | category=%s | count=0",
+                query_text,
+                inferred_category or "",
+            )
             return []
 
         ids = (results.get("ids") or [[]])[0]
@@ -140,13 +210,27 @@ class VectorStore:
         items: List[Dict[str, Any]] = []
         for index, content in enumerate(documents[0]):
             metadata = metadatas[index] if index < len(metadatas) and metadatas[index] else {}
-            items.append(
-                {
-                    "id": ids[index] if index < len(ids) else "",
-                    "content": content,
-                    "metadata": metadata,
-                    "distance": distances[index] if index < len(distances) else None,
-                }
+            item = {
+                "id": ids[index] if index < len(ids) else "",
+                "content": content,
+                "metadata": metadata,
+                "distance": distances[index] if index < len(distances) else None,
+            }
+            items.append(item)
+            content_preview = str(content or "")[: max(80, int(settings.rag_trace_content_chars or 800))]
+            content_preview = content_preview.replace("\n", " ")
+            logger.info(
+                "[RAGVectorScore] query=%s | category_filter=%s | rank=%s | id=%s | product_id=%s | title=%s | category=%s/%s | distance=%s | content=%s",
+                query_text,
+                inferred_category or "",
+                index + 1,
+                item["id"],
+                metadata.get("product_id") or "",
+                metadata.get("title") or "",
+                metadata.get("category") or "",
+                metadata.get("sub_category") or "",
+                item["distance"],
+                content_preview,
             )
 
         return items
@@ -276,4 +360,3 @@ class RAGService:
 embedding_service = EmbeddingService()
 vector_store = VectorStore()
 rag_service: Optional[RAGService] = None
-

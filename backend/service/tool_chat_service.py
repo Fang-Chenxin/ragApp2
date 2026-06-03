@@ -9,6 +9,7 @@ from typing import Any, AsyncGenerator, Dict, List, Optional
 
 from .llm_service import LLMService
 from .sqlite_product_query_tool import get_tool_spec, run_tool
+from .sqlite_product_search_service import sqlite_product_search_service
 from .rag_service import VectorStore
 from config.logging_config import get_logger
 from config.settings import settings
@@ -53,7 +54,6 @@ class ToolChatService:
             metadata = item.get("metadata") or {}
             source_parts = []
             for key, label in [
-                ("product_id", "商品ID"),
                 ("title", "商品"),
                 ("brand", "品牌"),
                 ("category", "分类"),
@@ -103,17 +103,21 @@ class ToolChatService:
     @staticmethod
     def _summarize_context_docs(context_docs: List[Any]) -> List[Dict[str, Any]]:
         summaries: list[Dict[str, Any]] = []
+        content_limit = max(80, int(settings.rag_trace_content_chars or 800))
         for index, item in enumerate(context_docs, start=1):
             if not isinstance(item, dict):
+                content = str(item)
                 summaries.append(
                     {
                         "rank": index,
                         "id": str(index),
-                        "preview": str(item)[:160],
+                        "preview": content[:160],
+                        "content": content[:content_limit],
                     }
                 )
                 continue
             metadata = item.get("metadata") or {}
+            content = str(item.get("content") or "")
             summaries.append(
                 {
                     "rank": index,
@@ -124,7 +128,8 @@ class ToolChatService:
                     "sub_category": str(metadata.get("sub_category") or ""),
                     "chunk_type": str(metadata.get("chunk_type") or ""),
                     "distance": item.get("distance"),
-                    "preview": str(item.get("content") or "")[:160],
+                    "preview": content[:160],
+                    "content": content[:content_limit],
                     "llm_rerank": item.get("llm_rerank"),
                 }
             )
@@ -141,6 +146,121 @@ class ToolChatService:
         }
         payload.update(extra)
         return payload
+
+    @staticmethod
+    def _format_trace_item(prefix: str, item: Dict[str, Any]) -> str:
+        return (
+            f"      {prefix} id={item.get('product_id') or item.get('id')} "
+            f"title={item.get('title')} cat={item.get('category')}/"
+            f"{item.get('sub_category')} "
+            f"score={(item.get('llm_rerank') or {}).get('score', '-')} "
+            f"dist={item.get('distance')}"
+        )
+
+    @staticmethod
+    def _format_trace_content(item: Dict[str, Any]) -> str:
+        content = str(item.get("content") or item.get("preview") or "").strip()
+        if not content:
+            return ""
+        return f"        原文: {content.replace(chr(10), ' ')}"
+
+    @staticmethod
+    def _format_rag_decision(decision: str) -> str:
+        decisions = {
+            "skipped": "跳过（未启用LLM核验或无候选文档）",
+            "skipped_single_candidate": "跳过（只有1条候选，直接使用向量结果）",
+            "skipped_non_structured_docs": "跳过（候选文档非结构化）",
+            "timeout_keep_vector_order": "LLM核验超时，保留原始向量排序",
+            "error_keep_vector_order": "LLM核验出错，保留原始向量排序",
+            "parse_failed_keep_vector_order": "LLM返回内容无法解析，保留原始排序",
+            "below_threshold_drop_all": "所有片段未达阈值，已丢弃RAG上下文",
+            "below_threshold_keep_highest_score": "所有片段未达阈值，保留评分最高的片段",
+            "no_matched_docs_keep_vector_order": "LLM未匹配到任何片段，保留原始排序",
+            "kept_above_threshold": "通过核验，保留了达到阈值的片段",
+        }
+        return decisions.get(decision, decision)
+
+    @classmethod
+    def _log_trace_chunk(cls, chunk: Dict[str, Any]) -> None:
+        if not logger.isEnabledFor(10):
+            return
+
+        phase = chunk.get("phase", "")
+        lines = ["", "─" * 72, f"  {chunk.get('title') or chunk.get('content') or phase}", "─" * 72]
+
+        if phase == "vector_search":
+            lines.append(f"  耗时: {chunk.get('elapsed', 0)}s")
+            if chunk.get("error"):
+                lines.append(f"  警告: {chunk.get('error')}")
+            candidates = chunk.get("candidates") or []
+            lines.append(f"  检索到 {len(candidates)} 条知识片段候选:")
+            for item in candidates[:8]:
+                lines.append(cls._format_trace_item("候选", item))
+                content_line = cls._format_trace_content(item)
+                if content_line:
+                    lines.append(content_line)
+
+        elif phase == "rag_rerank":
+            lines.append(f"  耗时: {chunk.get('elapsed', 0)}s  阈值: >= {chunk.get('min_score')}分")
+            lines.append(f"  核验结论: {cls._format_rag_decision(str(chunk.get('decision') or ''))}")
+            if chunk.get("error"):
+                lines.append(f"  原因: {chunk.get('error')}")
+            parsed = chunk.get("parsed_results") or []
+            if parsed:
+                lines.append("  LLM评分明细:")
+                for item in parsed:
+                    lines.append(f"    id={item.get('id')} score={item.get('score')} reason={item.get('reason')}")
+            kept = chunk.get("kept") or []
+            lines.append(f"  最终保留 {len(kept)} 条知识片段:")
+            for item in kept[:8]:
+                lines.append(cls._format_trace_item("保留", item))
+                content_line = cls._format_trace_content(item)
+                if content_line:
+                    lines.append(content_line)
+
+        elif phase == "direct_product_query":
+            lines.append(f"  后台直查耗时: {chunk.get('elapsed', 0)}s")
+            if chunk.get("error"):
+                lines.append(f"  警告: {chunk.get('error')}")
+            lines.append(f"  直查关键词: {chunk.get('query', '')}")
+            lines.append(f"  直接命中: {len(chunk.get('selected_product_ids') or [])} 个商品 -> {chunk.get('selected_product_ids') or []}")
+            lines.extend(cls._format_trace_item("直查结果", item) for item in (chunk.get("selected_products") or [])[:8])
+
+        elif phase == "tool_result":
+            status = "成功" if chunk.get("ok") else f"失败: {chunk.get('error')}"
+            lines.append(
+                f"  工具: {chunk.get('tool_name')} 耗时: {chunk.get('elapsed', 0)}s "
+                f"结果: {status} 命中: {chunk.get('total', 0)}条"
+            )
+            product_ids = chunk.get("product_ids") or []
+            if product_ids:
+                lines.append(f"  返回商品ID: {product_ids}")
+            lines.extend(cls._format_trace_item("查询结果", item) for item in (chunk.get("items") or [])[:8])
+
+        elif phase == "llm_tool_plan":
+            lines.append(f"  LLM第{chunk.get('round', '?')}轮工具调用计划:")
+            assistant_content = str(chunk.get("assistant_content") or "").strip()
+            if assistant_content:
+                lines.append(f"    LLM内容: {assistant_content[:200]}")
+            for call in chunk.get("tool_calls") or []:
+                lines.append(f"    调用 -> {call.get('tool_name')}({call.get('arguments')})")
+
+        elif phase == "selected_products":
+            lines.append(f"  直查命中: {chunk.get('direct_selected_product_ids') or '(无)'}")
+            lines.append(f"  工具命中: {chunk.get('tool_selected_product_ids') or '(无)'}")
+            lines.append(f"  合并后: {chunk.get('selected_product_ids') or []}")
+            lines.extend(cls._format_trace_item("合并结果", item) for item in (chunk.get("selected_products") or [])[:8])
+
+        elif phase == "organizing_results":
+            lines.append(f"  回复模式: {chunk.get('mode') or 'final'}")
+            lines.append(f"  目标商品: {chunk.get('selected_product_ids') or []}")
+            if chunk.get("final_message_count") is not None:
+                lines.append(f"  最终消息数: {chunk.get('final_message_count')}")
+
+        else:
+            lines.append(json.dumps({k: v for k, v in chunk.items() if k != "timings"}, ensure_ascii=False, default=str)[:1000])
+
+        logger.debug("\n".join(lines))
 
     def _query_context_docs(self, user_query: str) -> List[Any]:
         if hasattr(self.vector_store, "query_with_sources"):
@@ -166,7 +286,8 @@ class ToolChatService:
     @staticmethod
     def _build_rag_rerank_messages(user_query: str, context_docs: List[Any]) -> List[Dict[str, str]]:
         candidates: list[Dict[str, Any]] = []
-        for index, item in enumerate(context_docs, start=1):
+        max_candidates = max(1, int(settings.rag_llm_rerank_max_candidates or len(context_docs)))
+        for index, item in enumerate(context_docs[:max_candidates], start=1):
             if isinstance(item, dict):
                 metadata = item.get("metadata") or {}
                 candidates.append(
@@ -179,7 +300,7 @@ class ToolChatService:
                         "category": metadata.get("category") or "",
                         "sub_category": metadata.get("sub_category") or "",
                         "chunk_type": metadata.get("chunk_type") or "",
-                        "content": str(item.get("content") or "")[:700],
+                        "content": str(item.get("content") or "")[:500],
                     }
                 )
             else:
@@ -187,7 +308,7 @@ class ToolChatService:
                     {
                         "rank": index,
                         "id": str(index),
-                        "content": str(item)[:700],
+                        "content": str(item)[:500],
                     }
                 )
 
@@ -279,17 +400,25 @@ class ToolChatService:
         if not settings.rag_llm_rerank_enabled or not context_docs:
             debug["decision"] = "skipped"
             return context_docs, None, debug
+        if settings.rag_llm_rerank_skip_single_candidate and len(context_docs) <= 1:
+            debug["decision"] = "skipped_single_candidate"
+            debug["kept"] = self._summarize_context_docs(context_docs)
+            return context_docs, None, debug
         if not any(isinstance(item, dict) for item in context_docs):
             debug["decision"] = "skipped_non_structured_docs"
             return context_docs, None, debug
 
+        rerank_docs = context_docs[:max(1, int(settings.rag_llm_rerank_max_candidates or len(context_docs)))]
+        tail_docs = context_docs[len(rerank_docs):]
+
         try:
             raw_text = await asyncio.wait_for(
                 self.llm.chat(
-                    self._build_rag_rerank_messages(user_query, context_docs),
+                    self._build_rag_rerank_messages(user_query, rerank_docs),
                     temperature=0.0,
                     model=model,
                     model_config=model_config,
+                    max_tokens=settings.rag_llm_rerank_max_tokens,
                 ),
                 timeout=settings.rag_llm_rerank_timeout_seconds,
             )
@@ -320,7 +449,7 @@ class ToolChatService:
             return context_docs, error, debug
 
         docs_by_id: Dict[str, Any] = {}
-        for index, item in enumerate(context_docs, start=1):
+        for index, item in enumerate(rerank_docs, start=1):
             if not isinstance(item, dict):
                 continue
             metadata = item.get("metadata") or {}
@@ -372,22 +501,26 @@ class ToolChatService:
             if result["score"] >= settings.rag_llm_rerank_min_score:
                 reranked_docs.append(doc)
 
-        if not reranked_docs and matched_docs:
-            max_score = max(
-                int((item.get("llm_rerank") or {}).get("score") or 0)
-                for item in matched_docs
+        for matched in debug["matched"]:
+            logger.info(
+                "[RAGRerankScore] query=%s | requested_id=%s | product_id=%s | title=%s | score=%s | min_score=%s | kept=%s | reason=%s",
+                user_query,
+                matched.get("requested_id", ""),
+                matched.get("product_id", ""),
+                matched.get("title", ""),
+                matched.get("score", ""),
+                settings.rag_llm_rerank_min_score,
+                matched.get("score", 0) >= settings.rag_llm_rerank_min_score,
+                matched.get("reason", ""),
             )
-            fallback_docs = [
-                item for item in matched_docs
-                if int((item.get("llm_rerank") or {}).get("score") or 0) == max_score
-            ]
-            error = "LLM RAG 检查未达到保留阈值，已保留评分最高片段"
+
+        if not reranked_docs and matched_docs:
+            error = "LLM RAG 检查未达到保留阈值，已丢弃知识库上下文"
             logger.warning(error)
-            kept_docs = fallback_docs or context_docs
-            debug["decision"] = "below_threshold_keep_highest_score"
+            debug["decision"] = "below_threshold_drop_all"
             debug["error"] = error
-            debug["kept"] = self._summarize_context_docs(kept_docs)
-            return kept_docs, error, debug
+            debug["kept"] = []
+            return [], error, debug
 
         if not reranked_docs:
             error = "LLM RAG 检查未匹配到可保留片段，已保留原向量排序"
@@ -398,8 +531,9 @@ class ToolChatService:
             return context_docs, error, debug
 
         debug["decision"] = "kept_above_threshold"
-        debug["kept"] = self._summarize_context_docs(reranked_docs)
-        return reranked_docs, None, debug
+        final_docs = reranked_docs + tail_docs
+        debug["kept"] = self._summarize_context_docs(final_docs)
+        return final_docs, None, debug
 
     @staticmethod
     def _build_need_analysis_messages(
@@ -552,60 +686,122 @@ class ToolChatService:
     def _build_target_products(
         direct_products: List[Dict[str, Any]],
         tool_products: List[Dict[str, Any]],
+        user_query: str = "",
         limit: int = 5,
     ) -> List[Dict[str, Any]]:
-        targets: List[Dict[str, Any]] = []
-        seen_ids: set[str] = set()
+        candidates: List[Dict[str, Any]] = []
+        candidate_meta: Dict[str, Dict[str, Any]] = {}
 
-        for source, group in [("direct_query", direct_products), ("tool_query", tool_products)]:
+        for source, group in [("tool_query", tool_products), ("direct_query", direct_products)]:
             for item in group:
                 product_id = str(item.get("product_id") or "").strip()
-                if not product_id or product_id in seen_ids:
+                if not product_id or product_id in candidate_meta:
                     continue
-                seen_ids.add(product_id)
-                target = {
-                    "rank": len(targets) + 1,
-                    "product_id": product_id,
-                    "title": str(item.get("title") or ""),
-                    "brand": str(item.get("brand") or ""),
-                    "category": str(item.get("category") or ""),
-                    "sub_category": str(item.get("sub_category") or ""),
-                    "base_price": item.get("base_price") or item.get("price"),
+                candidate_meta[product_id] = {
                     "source": source,
-                    "recommendation_role": "primary" if not targets else "supporting",
+                    "recommendation_role": "primary" if not candidates else "supporting",
                 }
-                targets.append(target)
-                if len(targets) >= limit:
-                    return targets
+                candidates.append(item)
+                if len(candidates) >= limit:
+                    break
+            if len(candidates) >= limit:
+                break
+
+        product_ids = [str(item.get("product_id") or "").strip() for item in candidates if item.get("product_id")]
+        verification = sqlite_product_search_service.get_products_by_ids(product_ids)
+        if not verification.get("ok"):
+            logger.warning("目标商品数据库校验失败: %s", verification.get("error"))
+            return []
+
+        targets: List[Dict[str, Any]] = []
+        for db_item in verification.get("items") or []:
+            product_id = str(db_item.get("product_id") or "").strip()
+            if not product_id:
+                continue
+            meta = candidate_meta.get(product_id) or {}
+            target = {
+                "rank": len(targets) + 1,
+                "product_id": product_id,
+                "title": str(db_item.get("title") or ""),
+                "brand": str(db_item.get("brand") or ""),
+                "category": str(db_item.get("category") or ""),
+                "sub_category": str(db_item.get("sub_category") or ""),
+                "base_price": db_item.get("base_price"),
+                "image_path": db_item.get("image_path"),
+                "marketing_desc": str(db_item.get("marketing_desc") or "")[:500],
+                "source": str(meta.get("source") or "database"),
+                "recommendation_role": str(meta.get("recommendation_role") or ("primary" if not targets else "supporting")),
+            }
+            if not ToolChatService._matches_user_product_constraints(user_query, target):
+                logger.info(
+                    "[TargetProductsFilter] query=%s | filtered product_id=%s title=%s category=%s/%s",
+                    user_query,
+                    product_id,
+                    target["title"],
+                    target["category"],
+                    target["sub_category"],
+                )
+                continue
+            target["rank"] = len(targets) + 1
+            targets.append(target)
 
         return targets
 
     @staticmethod
+    def _matches_user_product_constraints(user_query: str, product: Dict[str, Any]) -> bool:
+        """按用户显式品类约束过滤目标商品，避免泛检索结果混入最终推荐。"""
+        query = user_query or ""
+        title = str(product.get("title") or "")
+        category = str(product.get("category") or "")
+        sub_category = str(product.get("sub_category") or "")
+        searchable = f"{title} {category} {sub_category}"
+
+        clothing_terms = (
+            "服装", "衣服", "衣物", "服饰", "穿搭", "上衣", "T恤", "短袖", "裤", "裙", "卫衣",
+            "运动", "训练", "健身", "力量训练", "速干", "透气",
+        )
+        explicit_clothing = any(term in query for term in clothing_terms)
+        explicitly_accessory_or_shoe = any(term in query for term in ("帽", "鞋", "包", "背包", "腰包"))
+        if explicit_clothing:
+            if category != "服饰运动":
+                return False
+            if not explicitly_accessory_or_shoe and any(term in searchable for term in ("帽", "跑步鞋", "徒步鞋", "鞋")):
+                return False
+            garment_terms = ("T恤", "短袖", "上衣", "裤", "裙", "卫衣", "外套", "服装", "衣服", "服饰", "速干")
+            return any(term in searchable for term in garment_terms)
+
+        if any(term in query for term in ("美妆", "护肤", "彩妆")) and category != "美妆护肤":
+            return False
+        if any(term in query for term in ("数码", "电子", "手机", "平板", "电脑", "笔记本", "耳机")) and category != "数码电子":
+            return False
+        if any(term in query for term in ("食品", "饮料", "零食", "吃的", "喝的")) and category != "食品饮料":
+            return False
+
+        return True
+
+    @staticmethod
+    def _log_target_products(user_query: str, selected_products: List[Dict[str, Any]], stage: str) -> None:
+        if not selected_products:
+            logger.info("[TargetProducts] stage=%s | query=%s | none", stage, user_query)
+            return
+        logger.info("[TargetProducts] stage=%s | query=%s | count=%s", stage, user_query, len(selected_products))
+        for item in selected_products:
+            logger.info(
+                "[TargetProducts] rank=%s | product_id=%s | title=%s | brand=%s | category=%s/%s | price=%s | source=%s | role=%s",
+                item.get("rank"),
+                item.get("product_id"),
+                item.get("title"),
+                item.get("brand"),
+                item.get("category"),
+                item.get("sub_category"),
+                item.get("base_price"),
+                item.get("source"),
+                item.get("recommendation_role"),
+            )
+
+    @staticmethod
     def _build_direct_product_query_text(user_query: str) -> str:
-        query = user_query.strip()
-        direct_keywords = [
-            "眉笔",
-            "口红",
-            "粉底",
-            "粉饼",
-            "蜜粉",
-            "眼霜",
-            "面霜",
-            "精华",
-            "洁面",
-            "手机",
-            "平板",
-            "笔记本",
-            "电脑",
-            "耳机",
-            "零食",
-            "牛奶",
-            "饮料",
-            "运动裤",
-            "T恤",
-        ]
-        matched = [keyword for keyword in direct_keywords if keyword in query]
-        return " ".join(matched) if matched else query
+        return user_query.strip()
 
     @classmethod
     def _query_direct_selected_products(cls, user_query: str, limit: int = 5) -> List[Dict[str, Any]]:
@@ -627,14 +823,13 @@ class ToolChatService:
         if not selected_products:
             return ""
 
-        lines = ["\n\n基于商品数据库命中的候选，我为你补充可核对的商品ID："]
+        lines = ["我根据商品库里已核验的商品，先给你整理一个稳妥选择："]
         for index, item in enumerate(selected_products[:3], start=1):
             title = item.get("title") or "命中商品"
-            product_id = item.get("product_id") or ""
             brand = item.get("brand") or ""
             sub_category = item.get("sub_category") or item.get("category") or ""
             price = item.get("base_price")
-            details = [f"{title}（商品ID：{product_id}）"]
+            details = [title]
             if brand:
                 details.append(f"品牌：{brand}")
             if sub_category:
@@ -643,22 +838,53 @@ class ToolChatService:
                 details.append(f"参考价：{price}")
             lines.append(f"{index}. " + "，".join(details))
 
-        if "眉笔" in user_query:
-            lines.append("这类细头、显色适中的眉笔更适合新手少量多次描画，出错后也更容易调整。")
-        else:
-            lines.append("建议优先从上面的商品ID里选择，方便和数据库查询结果保持一致。")
+        lines.append("这些商品都来自当前商品数据库，建议优先结合你的预算、使用场景和品牌偏好再做取舍。")
 
         return "\n".join(lines)
+
+    @staticmethod
+    def _sanitize_user_reply(content: str) -> str:
+        """移除对用户选购无帮助的内部商品/SKU 标识。"""
+        text = content or ""
+        text = re.sub(r"(?im)^\s*(?:商品\s*ID|product_id|sku_id|SKU)\s*[:：].*$", "", text)
+        text = re.sub(r"（\s*(?:商品\s*ID|product_id|sku_id|SKU)\s*[:：]\s*[^）]+）", "", text, flags=re.I)
+        text = re.sub(r"\(\s*(?:商品\s*ID|product_id|sku_id|SKU)\s*[:：]\s*[^)]+\)", "", text, flags=re.I)
+        text = re.sub(r"(?:商品\s*ID|product_id|sku_id|SKU)\s*[:：]\s*[psc]_[a-z]+_\d+(?:_\d+)?", "", text, flags=re.I)
+        text = re.sub(r"\n{3,}", "\n\n", text)
+        return text.strip()
+
+    @staticmethod
+    def _sanitize_user_reply_chunk(content: str) -> str:
+        """流式片段清洗，保留片段原有空白以免破坏 Markdown 排版。"""
+        text = content or ""
+        text = re.sub(r"（\s*(?:商品\s*ID|product_id|sku_id|SKU)\s*[:：]\s*[^）]+）", "", text, flags=re.I)
+        text = re.sub(r"\(\s*(?:商品\s*ID|product_id|sku_id|SKU)\s*[:：]\s*[^)]+\)", "", text, flags=re.I)
+        text = re.sub(r"(?:商品\s*ID|product_id|sku_id|SKU)\s*[:：]\s*[psc]_[a-z]+_\d+(?:_\d+)?", "", text, flags=re.I)
+        return text
 
     @staticmethod
     def _build_selected_products_context(selected_products: List[Dict[str, Any]]) -> str:
         if not selected_products:
             return "未找到明确命中的商品候选。"
 
+        public_products: List[Dict[str, Any]] = []
+        for item in selected_products:
+            public_products.append(
+                {
+                    "rank": item.get("rank"),
+                    "title": item.get("title"),
+                    "brand": item.get("brand"),
+                    "category": item.get("category"),
+                    "sub_category": item.get("sub_category"),
+                    "base_price": item.get("base_price"),
+                    "marketing_desc": item.get("marketing_desc"),
+                }
+            )
+
         return (
-            "## 目标商品白名单（最终推荐必须且只能引用这些 product_id）\n"
+            "## 内部目标商品清单（已从商品数据库校验存在）\n"
             "```json\n"
-            f"{json.dumps(selected_products, ensure_ascii=False, indent=2)}\n"
+            f"{json.dumps(public_products, ensure_ascii=False, indent=2)}\n"
             "```"
         )
 
@@ -667,24 +893,35 @@ class ToolChatService:
         system_prompt: str,
         analysis_text: str,
         selected_products: List[Dict[str, Any]],
+        user_query: str,
+        conversation_history: Optional[List[Dict[str, str]]] = None,
     ) -> List[Dict[str, str]]:
         selected_context = ToolChatService._build_selected_products_context(selected_products)
         final_guidance = (
             "你现在进入最终导购推荐阶段。\n"
-            "请基于前面的需求分析和目标商品白名单，输出面向用户的最终推荐。\n"
-            "要求：1) 开头先用一句话确认用户需求；2) 必须明确输出目标商品ID，便于外部系统核对；"
-            "3) 围绕目标商品给出推荐理由、适配场景和取舍建议；4) 不要重复长篇需求分析；"
-            "5) 推荐要自然、像真人导购；6) 如果存在目标商品白名单，最终推荐必须且只能引用白名单里的 product_id，"
-            "不要编造或改用白名单之外的商品ID；7) 商品事实以白名单 JSON 和工具结果为准。\n\n"
+            "请基于前面的需求分析和内部目标商品清单，输出面向用户的最终推荐。\n"
+            "要求：1) 开头先用一句话确认用户需求；2) 围绕目标商品给出推荐理由、适配场景和取舍建议；"
+            "3) 不要重复长篇需求分析；4) 推荐要自然、像真人导购；"
+            "5) 只能推荐内部目标商品清单中的商品，不要编造或改用清单之外的商品；"
+            "6) 商品事实以内部目标商品清单 JSON 和工具结果为准；"
+            "7) product_id、sku_id、source、recommendation_role 是内部核对字段，除非用户明确询问，不要在对外回复里展示。\n\n"
             f"需求分析摘要：\n{analysis_text or '（无）'}\n\n"
             f"{selected_context}"
         )
-        return [
+        messages: List[Dict[str, str]] = [
             {
                 "role": "system",
                 "content": system_prompt + "\n\n" + final_guidance,
             }
         ]
+        if conversation_history:
+            for msg in conversation_history:
+                role = msg.get("role")
+                content = msg.get("content")
+                if role in {"user", "assistant"} and content:
+                    messages.append({"role": role, "content": content})
+        messages.append({"role": "user", "content": user_query})
+        return messages
     @staticmethod
     def _parse_tool_arguments(arguments_text: str) -> Dict[str, Any]:
         try:
@@ -701,12 +938,12 @@ class ToolChatService:
             "## 商品查询策略（严格遵守）\n"
             "1. 先判断用户想解决的真实问题，再决定检索方向；不要只盯着用户字面上的词。\n"
             "2. 优先推荐直接相关商品；如果没有直接相商品，必须转向次相关商品或相邻品类，不要只说没有。\n"
-            "3. 当用户是在描述目标、场景或体验诉求时，例如'我要成为XX高手'、'想提升对战体验'、'想要更流畅'，\n"
-            "   要把需求理解为场景型购物需求，优先考虑数码电子类的手机、平板、笔记本、耳机等提升体验的商品。\n"
-            "4. 如果直搜某个品牌、游戏或泛词没有结果，要主动改用场景词重搜，例如'适合玩<场景>的游戏电子产品'、\n"
-            "   '提升<场景>体验的数码电子产品'、'高刷平板'、'游戏手机'、'降噪耳机'、'轻薄本'。\n"
+            "3. 当用户是在描述目标、场景或体验诉求时，要把需求理解为场景型购物需求，"
+            "并结合数据库中真实存在的品类检索可购买商品。\n"
+            "4. 如果直搜某个品牌、场景或泛词没有结果，要主动换用更具体的品类、用途、属性或预算重搜；"
+            "仍无结果时如实说明并询问用户是否接受相邻品类。\n"
             "5. 当前阶段优先调用工具查询商品库；只有用户问题明显不需要商品检索时，才直接回复。\n"
-            "6. 如果工具返回结果，最终回复只能基于工具结果中的商品ID和商品信息。\n\n"
+            "6. 如果工具返回结果，最终回复只能基于工具结果中的商品信息，不要向用户展示内部商品ID。\n\n"
             "## 调用工具规则（严格遵守）\n"
             "1. 调用 query_products 时，必须提供有效的查询参数（text、keyword、brand 等），禁止传空参数 {}。\n"
             "2. 如果用户的问题引用了对话历史中的商品（如'这几个''上面的''那款''这个牌子'），"
@@ -724,12 +961,12 @@ class ToolChatService:
             f"参考知识库内容：\n{rag_section}\n\n"
             f"{ToolChatService._build_history_context(conversation_history, user_query)}\n\n"
             "## 最终回复策略（严格遵守）\n"
-            "1. 商品事实、商品ID、价格、品牌和品类优先以工具查询结果为准。\n"
+            "1. 商品事实、价格、品牌和品类优先以工具查询结果为准。\n"
             "2. 知识库内容只作为解释商品卖点、适配场景和补充背景的依据；如果知识库为空或无关，不要阻塞推荐。\n"
             "3. 如果 RAG 未命中但工具命中了商品，要正常基于商品数据库结果给出推荐。\n"
             "4. 如果工具和知识库信息冲突，以工具结果中的结构化商品信息为准。\n"
             "5. 最终回答要像导购：先一句话概括用户需求，再给出 3-5 个推荐方向或具体商品，并说明每个推荐为什么相关。\n"
-            "6. 不要编造工具结果之外的商品ID。"
+            "6. 不要编造工具结果之外的商品；product_id、sku_id 等内部字段除非用户明确询问，不要在对外回复里展示。"
         )
 
     async def _run_tool_worker(
@@ -812,6 +1049,14 @@ class ToolChatService:
             for i, doc in enumerate(context_docs[:3]):
                 preview = str(doc)[:100].replace('\n', ' ')
                 logger.debug("      文档[%s]: %s...", i, preview)
+        self._log_trace_chunk(self._debug_chunk(
+            "vector_search",
+            "向量检索结果",
+            query=user_query,
+            elapsed=elapsed,
+            error=vector_error,
+            candidates=self._summarize_context_docs(context_docs),
+        ))
         t_rerank = time.perf_counter()
         context_docs, rerank_error, _rerank_debug = await self._rerank_context_docs_with_llm(
             user_query,
@@ -825,6 +1070,12 @@ class ToolChatService:
             timings["rag_rerank_error"] = rerank_error
         if context_docs:
             logger.debug("  [1.5] LLM RAG 检查完成 | 耗时: %ss | 保留 %s 条", rerank_elapsed, len(context_docs))
+        self._log_trace_chunk(self._debug_chunk(
+            "rag_rerank",
+            "RAG LLM 检查明细",
+            **_rerank_debug,
+            elapsed=rerank_elapsed,
+        ))
 
         context_text = self._format_context_docs(context_docs)
         rag_sources = self._extract_rag_sources(context_docs)
@@ -1032,6 +1283,8 @@ class ToolChatService:
         logger.debug("  历史消息数: %s", len(conversation_history) if conversation_history else 0)
         logger.debug("  最大工具调用轮数: %s", max_tool_calls)
         logger.debug("  使用模型: %s", model or (model_config or {}).get("id") or getattr(self.llm, "model", "default"))
+        logger.debug("  并行流程: %s", "启用" if settings.tool_chat_parallel_enabled else "关闭")
+        timings["parallel_enabled"] = settings.tool_chat_parallel_enabled
 
         if not self.llm.connected and not (model_config or {}).get("api_key"):
             logger.warning("  LLM 服务未连接")
@@ -1052,8 +1305,6 @@ class ToolChatService:
                 logger.warning(error)
                 return [], round(time.perf_counter() - direct_start, 3), error
 
-        direct_selected_products_task = asyncio.create_task(_query_direct_selected_products_async())
-
         tool_planning_prompt = self._build_tool_planning_prompt(conversation_history, user_query)
         messages: list[Dict[str, Any]] = [{"role": "system", "content": tool_planning_prompt}]
         if conversation_history:
@@ -1062,22 +1313,67 @@ class ToolChatService:
         messages.append({"role": "user", "content": user_query})
         tools = [get_tool_spec()]
 
+        analysis_text = ""
+        analysis_elapsed = 0.0
+        analysis_done = False
+        analysis_queue: asyncio.Queue[Dict[str, Any]] = asyncio.Queue()
+
         async def _run_need_analysis() -> tuple[str, float]:
             analysis_text = ""
             analysis_start = time.perf_counter()
+            first_delta_logged = False
             try:
                 analysis_messages = self._build_need_analysis_messages(conversation_history, user_query)
                 async for chunk in self.llm.chat_stream(analysis_messages, model=model, model_config=model_config):
                     if chunk:
+                        if not first_delta_logged:
+                            logger.info(
+                                "[AnalysisStream] query=%s | first_delta_after=%ss | chunk_len=%s",
+                                user_query,
+                                round(time.perf_counter() - analysis_start, 3),
+                                len(chunk),
+                            )
+                            first_delta_logged = True
                         analysis_text += chunk
+                        await analysis_queue.put({"type": "analysis_delta", "content": chunk})
             except Exception as exc:
                 analysis_text = self._build_need_analysis_summary(user_query, conversation_history)
+                await analysis_queue.put({"type": "analysis_delta", "content": analysis_text})
                 logger.warning("      需求分析生成失败，已切换为简化分析: %s", type(exc).__name__)
 
             if not analysis_text.strip():
                 analysis_text = self._build_need_analysis_summary(user_query, conversation_history)
+                await analysis_queue.put({"type": "analysis_delta", "content": analysis_text})
                 logger.debug("      分析结果为空，已使用简化分析兜底")
-            return analysis_text, round(time.perf_counter() - analysis_start, 3)
+            elapsed = round(time.perf_counter() - analysis_start, 3)
+            await analysis_queue.put({"type": "analysis_done", "content": analysis_text, "elapsed": elapsed})
+            return analysis_text, elapsed
+
+        async def _emit_analysis_event(event: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+            nonlocal analysis_text, analysis_elapsed, analysis_done
+            event_type = event.get("type")
+            if event_type == "analysis_delta":
+                content = str(event.get("content") or "")
+                if not content:
+                    return None
+                analysis_text += content
+                return {
+                    "type": "analysis",
+                    "content": content,
+                    "summary": analysis_text[:200].replace("\n", " "),
+                    "timings": None,
+                }
+            if event_type == "analysis_done":
+                analysis_done = True
+                analysis_elapsed = float(event.get("elapsed") or 0)
+                timings["analysis_calls"] = analysis_elapsed
+                return {
+                    "type": "analysis",
+                    "content": "",
+                    "summary": analysis_text[:200].replace("\n", " "),
+                    "timings": {"analysis_calls": analysis_elapsed},
+                }
+            return None
 
         async def _run_first_tool_planning_call() -> tuple[Any, Optional[Exception], float, float]:
             call_start = time.perf_counter()
@@ -1088,6 +1384,8 @@ class ToolChatService:
                     tool_choice="auto",
                     model=model,
                     model_config=model_config,
+                    thinking_type=None,
+                    reasoning_effort=None,
                 )
                 duration = time.perf_counter() - call_start
                 return response, None, round(duration, 3), duration
@@ -1095,12 +1393,32 @@ class ToolChatService:
                 duration = time.perf_counter() - call_start
                 return None, exc, round(duration, 3), duration
 
+        parallel_branch_start = time.perf_counter()
+        direct_selected_products_task: Optional[asyncio.Task[tuple[List[Dict[str, Any]], float, Optional[str]]]] = None
+        analysis_task: asyncio.Task[tuple[str, float]]
+        first_tool_planning_task: Optional[asyncio.Task[tuple[Any, Optional[Exception], float, float]]] = None
         analysis_task = asyncio.create_task(_run_need_analysis())
-        first_tool_planning_task = asyncio.create_task(_run_first_tool_planning_call())
+        if settings.tool_chat_parallel_enabled:
+            direct_selected_products_task = asyncio.create_task(_query_direct_selected_products_async())
+            first_tool_planning_task = asyncio.create_task(_run_first_tool_planning_call())
 
+        yield self._status_chunk("正在分析需求", "need_analysis")
         yield self._status_chunk("正在检索知识库", "retrieving_knowledge")
         t0 = time.perf_counter()
-        context_docs, vector_error = await self._query_context_docs_with_timeout(user_query)
+        vector_task = asyncio.create_task(self._query_context_docs_with_timeout(user_query))
+        while not vector_task.done():
+            try:
+                event = await asyncio.wait_for(analysis_queue.get(), timeout=0.2)
+                payload = await _emit_analysis_event(event)
+                if payload:
+                    yield payload
+            except asyncio.TimeoutError:
+                pass
+        context_docs, vector_error = await vector_task
+        while not analysis_queue.empty():
+            payload = await _emit_analysis_event(await analysis_queue.get())
+            if payload:
+                yield payload
         context_text = self._format_context_docs(context_docs)
         rag_sources = self._extract_rag_sources(context_docs)
         elapsed = round(time.perf_counter() - t0, 3)
@@ -1113,7 +1431,7 @@ class ToolChatService:
             for i, doc in enumerate(context_docs[:3]):
                 preview = str(doc)[:100].replace('\n', ' ')
                 logger.debug("      文档[%s]: %s...", i, preview)
-        yield self._debug_chunk(
+        trace_chunk = self._debug_chunk(
             "vector_search",
             "向量检索结果",
             query=user_query,
@@ -1121,16 +1439,38 @@ class ToolChatService:
             error=vector_error,
             candidates=self._summarize_context_docs(context_docs),
         )
+        self._log_trace_chunk(trace_chunk)
+        yield trace_chunk
+
+        if not settings.tool_chat_parallel_enabled:
+            while not analysis_done:
+                event = await analysis_queue.get()
+                payload = await _emit_analysis_event(event)
+                if payload:
+                    yield payload
 
         if context_docs and settings.rag_llm_rerank_enabled:
             yield self._status_chunk("正在校验知识库", "reranking_knowledge")
         t_rerank = time.perf_counter()
-        context_docs, rerank_error, rerank_debug = await self._rerank_context_docs_with_llm(
+        rerank_task = asyncio.create_task(self._rerank_context_docs_with_llm(
             user_query,
             context_docs,
             model=model,
             model_config=model_config,
-        )
+        ))
+        while not rerank_task.done():
+            try:
+                event = await asyncio.wait_for(analysis_queue.get(), timeout=0.2)
+                payload = await _emit_analysis_event(event)
+                if payload:
+                    yield payload
+            except asyncio.TimeoutError:
+                pass
+        context_docs, rerank_error, rerank_debug = await rerank_task
+        while not analysis_queue.empty():
+            payload = await _emit_analysis_event(await analysis_queue.get())
+            if payload:
+                yield payload
         rerank_elapsed = round(time.perf_counter() - t_rerank, 3)
         timings["rag_rerank"] = rerank_elapsed
         if rerank_error:
@@ -1138,12 +1478,14 @@ class ToolChatService:
         if context_docs:
             logger.debug("  [1.5] LLM RAG 检查完成 | 耗时: %ss | 保留 %s 条", rerank_elapsed, len(context_docs))
 
-        yield self._debug_chunk(
+        trace_chunk = self._debug_chunk(
             "rag_rerank",
             "RAG LLM 检查明细",
             **rerank_debug,
             elapsed=rerank_elapsed,
         )
+        self._log_trace_chunk(trace_chunk)
+        yield trace_chunk
 
         context_text = self._format_context_docs(context_docs)
         rag_sources = self._extract_rag_sources(context_docs)
@@ -1155,20 +1497,15 @@ class ToolChatService:
                 "timings": None,
             }
 
-        logger.debug("      [2] 开始 LLM 需求分析流")
-        yield self._status_chunk("正在分析需求", "need_analysis")
-
-        analysis_text, analysis_elapsed = await analysis_task
-        timings["analysis_calls"] = analysis_elapsed
+        while not analysis_done:
+            event = await analysis_queue.get()
+            payload = await _emit_analysis_event(event)
+            if payload:
+                yield payload
+        await analysis_task
         logger.debug("      分析耗时: %ss", analysis_elapsed)
         logger.debug("      分析摘要: %s", analysis_text[:200].replace("\n", " "))
         logger.debug("      分析完整内容:\n%s", analysis_text)
-        yield {
-            "type": "analysis",
-            "content": analysis_text,
-            "summary": analysis_text[:200].replace("\n", " "),
-            "timings": {"analysis_calls": analysis_elapsed},
-        }
 
         final_system_prompt = self._build_system_prompt(context_text, conversation_history, user_query)
         logger.debug("  构建消息列表: %s 条 (含 system + 历史 + 当前问题)", len(messages))
@@ -1181,8 +1518,11 @@ class ToolChatService:
 
         tool_results: Dict[str, Dict[str, Any]] = {}
         tool_call_order: list[str] = []
-        direct_selected_products, direct_query_elapsed, direct_query_error = await direct_selected_products_task
-        yield self._debug_chunk(
+        if direct_selected_products_task is not None:
+            direct_selected_products, direct_query_elapsed, direct_query_error = await direct_selected_products_task
+        else:
+            direct_selected_products, direct_query_elapsed, direct_query_error = await _query_direct_selected_products_async()
+        trace_chunk = self._debug_chunk(
             "direct_product_query",
             "原始需求直查 SQLite 商品库",
             query=self._build_direct_product_query_text(user_query),
@@ -1191,13 +1531,24 @@ class ToolChatService:
             selected_product_ids=[item["product_id"] for item in direct_selected_products],
             selected_products=direct_selected_products,
         )
+        self._log_trace_chunk(trace_chunk)
+        yield trace_chunk
 
         for round_idx in range(max_tool_calls):
             logger.debug("  ── LLM 第 %s 轮调用 ──", round_idx + 1)
             logger.debug("      发送消息数: %s", len(messages))
 
             if round_idx == 0:
-                response, call_error, elapsed, duration = await first_tool_planning_task
+                if first_tool_planning_task is not None:
+                    response, call_error, elapsed, duration = await first_tool_planning_task
+                else:
+                    response, call_error, elapsed, duration = await _run_first_tool_planning_call()
+                if settings.tool_chat_parallel_enabled:
+                    parallel_wall = max(time.perf_counter() - parallel_branch_start, 0)
+                    parallel_branch_sum = analysis_elapsed + direct_query_elapsed + duration
+                    timings["parallel_overlap_saved_estimate"] = round(max(parallel_branch_sum - parallel_wall, 0), 3)
+                else:
+                    timings["parallel_overlap_saved_estimate"] = 0
                 if call_error:
                     logger.error("      LLM 调用异常 | 耗时: %ss | %s: %s", elapsed, type(call_error).__name__, call_error)
                     timings["llm_calls"] = round(llm_call_total + duration, 3)
@@ -1220,6 +1571,8 @@ class ToolChatService:
                         tool_choice="auto",
                         model=model,
                         model_config=model_config,
+                        thinking_type=None,
+                        reasoning_effort=None,
                     )
                 except Exception as e:
                     elapsed = round(time.perf_counter() - t1, 3)
@@ -1292,13 +1645,15 @@ class ToolChatService:
                             "arguments": self._parse_tool_arguments(tc.function.arguments or "{}"),
                         }
                     )
-                yield self._debug_chunk(
+                trace_chunk = self._debug_chunk(
                     "llm_tool_plan",
                     f"LLM 第 {round_idx + 1} 轮工具调用计划",
                     round=round_idx + 1,
                     tool_calls=planned_tool_calls,
                     assistant_content=assistant_message.content or "",
                 )
+                self._log_trace_chunk(trace_chunk)
+                yield trace_chunk
 
             if not assistant_message.tool_calls:
                 reply_preview = (assistant_message.content or "")[:200].replace('\n', ' ')
@@ -1306,9 +1661,9 @@ class ToolChatService:
                 logger.debug("      回复预览: %s...", reply_preview)
 
                 tool_selected_products = self._extract_selected_products(tool_results, tool_call_order)
-                selected_products = self._build_target_products(direct_selected_products, tool_selected_products)
+                selected_products = self._build_target_products(direct_selected_products, tool_selected_products, user_query)
                 selected_product_ids = [item["product_id"] for item in selected_products]
-                yield self._debug_chunk(
+                trace_chunk = self._debug_chunk(
                     "selected_products",
                     "最终目标商品合并结果",
                     direct_selected_product_ids=[item["product_id"] for item in direct_selected_products],
@@ -1319,14 +1674,17 @@ class ToolChatService:
                     selected_product_ids=selected_product_ids,
                     selected_products=selected_products,
                 )
+                self._log_trace_chunk(trace_chunk)
+                yield trace_chunk
                 if selected_product_ids:
                     yield {
                         "type": "selected_products",
-                        "content": f"已选中商品ID：{', '.join(selected_product_ids)}",
+                        "content": "已选定目标商品",
                         "selected_product_ids": selected_product_ids,
                         "selected_products": selected_products,
                         "timings": None,
                     }
+                self._log_target_products(user_query, selected_products, "before_final_reply")
 
                 yield self._status_chunk("正在整理结果", "organizing_results")
 
@@ -1338,37 +1696,45 @@ class ToolChatService:
 
                 final_content = assistant_message.content or ""
                 needs_constrained_final = bool(selected_product_ids)
-                yield self._debug_chunk(
+                trace_chunk = self._debug_chunk(
                     "organizing_results",
                     "最终回复整理检查",
                     mode="assistant_direct_reply",
                     selected_product_ids=selected_product_ids,
-                    direct_reply_product_ids=re.findall(r"p_[a-z]+_\d+", final_content),
                     needs_constrained_final=needs_constrained_final,
                 )
+                self._log_trace_chunk(trace_chunk)
+                yield trace_chunk
 
                 if needs_constrained_final:
-                    logger.debug("      存在目标商品，切换为受约束最终整理")
-                    final_messages = []
-                    for msg in messages:
-                        if msg.get("role") == "system":
-                            continue
-                        entry: Dict[str, Any] = {"role": msg.get("role"), "content": msg.get("content")}
-                        if msg.get("role") == "tool" and msg.get("tool_call_id"):
-                            entry["tool_call_id"] = msg.get("tool_call_id")
-                        final_messages.append(entry)
+                    logger.debug("      存在目标商品，基于数据库目标清单流式生成最终回复")
                     final_messages = self._build_final_recommendation_messages(
                         final_system_prompt,
                         analysis_text.strip(),
                         selected_products,
-                    ) + final_messages
+                        user_query,
+                        conversation_history,
+                    )
 
                     t_final = time.perf_counter()
                     generated_content = ""
+                    final_chunk_count = 0
+                    first_final_chunk_logged = False
                     try:
                         async for chunk in self.llm.chat_stream(final_messages, model=model, model_config=model_config):
                             generated_content += chunk
-                            yield {"type": "content", "content": chunk, "timings": None}
+                            final_chunk_count += 1
+                            if chunk and not first_final_chunk_logged:
+                                logger.info(
+                                    "[FinalStream] query=%s | mode=constrained_direct | first_delta_after=%ss | chunk_len=%s",
+                                    user_query,
+                                    round(time.perf_counter() - t_final, 3),
+                                    len(chunk),
+                                )
+                                first_final_chunk_logged = True
+                            sanitized_chunk = self._sanitize_user_reply_chunk(chunk)
+                            if sanitized_chunk:
+                                yield {"type": "content", "content": sanitized_chunk, "timings": None}
                     except Exception as e:
                         elapsed = round(time.perf_counter() - t_final, 3)
                         logger.error("      受约束最终 LLM 调用异常 | 耗时: %ss | %s: %s", elapsed, type(e).__name__, e)
@@ -1379,21 +1745,27 @@ class ToolChatService:
                         }
                         return
                     llm_call_total += time.perf_counter() - t_final
+                    logger.info(
+                        "[FinalStream] query=%s | mode=constrained_direct | chunks=%s | elapsed=%ss | generated_len=%s",
+                        user_query,
+                        final_chunk_count,
+                        round(time.perf_counter() - t_final, 3),
+                        len(generated_content),
+                    )
                     llm_rounds += 1
                     timings["llm_calls"] = round(llm_call_total, 3)
                     timings["llm_rounds"] = llm_rounds
-                    if not any(product_id in generated_content for product_id in selected_product_ids):
+                    if not generated_content.strip():
                         fallback_reply = self._build_deterministic_final_reply(user_query, selected_products)
                         if fallback_reply:
                             yield self._debug_chunk(
                                 "organizing_results",
-                                "受约束回复仍未引用候选ID，追加确定性兜底",
+                                "受约束回复为空，改用确定性兜底",
                                 selected_product_ids=selected_product_ids,
-                                generated_product_ids=re.findall(r"p_[a-z]+_\d+", generated_content),
                             )
-                            yield {"type": "content", "content": fallback_reply, "timings": None}
+                            yield {"type": "content", "content": self._sanitize_user_reply(fallback_reply), "timings": None}
                 elif final_content:
-                    yield {"type": "content", "content": final_content, "timings": None}
+                    yield {"type": "content", "content": self._sanitize_user_reply(final_content), "timings": None}
 
                 timings["total"] = round(time.perf_counter() - t_total_start, 3)
                 self._print_timings_summary(timings)
@@ -1447,7 +1819,7 @@ class ToolChatService:
                 result_total = outcome.get("total", 0)
                 result_ok = outcome.get("ok", None)
                 logger.debug("           结果: ok=%s, total=%s, 耗时=%ss", result_ok, result_total, outcome.get("elapsed", 0))
-                yield self._debug_chunk(
+                trace_chunk = self._debug_chunk(
                     "tool_result",
                     f"工具结果：{outcome['tool_name']}",
                     tool_call_id=outcome["tool_call_id"],
@@ -1477,6 +1849,8 @@ class ToolChatService:
                         if isinstance(item, dict)
                     ] if isinstance(result, dict) else [],
                 )
+                self._log_trace_chunk(trace_chunk)
+                yield trace_chunk
                 if outcome.get("error"):
                     yield self._status_chunk(
                         f"查询失败：{outcome['tool_name']}",
@@ -1521,10 +1895,25 @@ class ToolChatService:
             else:
                 consecutive_empty_params = 0
 
+            round_tool_selected_products = self._extract_selected_products(tool_results, tool_call_order)
+            round_selected_products = self._build_target_products(
+                direct_selected_products,
+                round_tool_selected_products,
+                user_query,
+            )
+            if len(round_selected_products) >= 3:
+                logger.debug("      已获得 %s 个目标商品，提前进入最终推荐生成", len(round_selected_products))
+                yield self._status_chunk(
+                    "已找到足够候选，正在整理推荐",
+                    "organizing_results",
+                    extra={"selected_product_count": len(round_selected_products)},
+                )
+                break
+
         tool_selected_products = self._extract_selected_products(tool_results, tool_call_order)
-        selected_products = self._build_target_products(direct_selected_products, tool_selected_products)
+        selected_products = self._build_target_products(direct_selected_products, tool_selected_products, user_query)
         selected_product_ids = [item["product_id"] for item in selected_products]
-        yield self._debug_chunk(
+        trace_chunk = self._debug_chunk(
             "selected_products",
             "最终目标商品合并结果",
             direct_selected_product_ids=[item["product_id"] for item in direct_selected_products],
@@ -1535,14 +1924,17 @@ class ToolChatService:
             selected_product_ids=selected_product_ids,
             selected_products=selected_products,
         )
+        self._log_trace_chunk(trace_chunk)
+        yield trace_chunk
         if selected_product_ids:
             yield {
                 "type": "selected_products",
-                "content": f"已选中商品ID：{', '.join(selected_product_ids)}",
+                "content": "已选定目标商品",
                 "selected_product_ids": selected_product_ids,
                 "selected_products": selected_products,
                 "timings": None,
             }
+        self._log_target_products(user_query, selected_products, "before_final_reply")
 
         logger.debug("  ── 工具调用轮数已耗尽，执行最终流式 LLM 调用 ──")
         logger.debug("      发送消息数: %s", len(messages))
@@ -1555,49 +1947,69 @@ class ToolChatService:
         timings["tool_calls"] = round(tool_call_total, 3)
         timings["tool_rounds"] = tool_rounds
 
-        final_messages = []
-        for msg in messages:
-            if msg.get("role") == "system":
-                continue
-            entry: Dict[str, Any] = {"role": msg.get("role"), "content": msg.get("content")}
-            # 保留 tool 消息的 tool_call_id，部分 LLM 提供方要求该字段
-            if msg.get("role") == "tool" and msg.get("tool_call_id"):
-                entry["tool_call_id"] = msg.get("tool_call_id")
-            final_messages.append(entry)
-        final_messages = self._build_final_recommendation_messages(final_system_prompt, analysis_text.strip(), selected_products) + final_messages
-        yield self._debug_chunk(
+        final_messages = self._build_final_recommendation_messages(
+            final_system_prompt,
+            analysis_text.strip(),
+            selected_products,
+            user_query,
+            conversation_history,
+        )
+        trace_chunk = self._debug_chunk(
             "organizing_results",
             "最终整理输入",
             selected_product_ids=selected_product_ids,
             selected_products=selected_products,
             final_message_count=len(final_messages),
         )
+        self._log_trace_chunk(trace_chunk)
+        yield trace_chunk
 
         try:
             generated_content = ""
+            final_chunk_count = 0
+            first_final_chunk_logged = False
             async for chunk in self.llm.chat_stream(final_messages, model=model, model_config=model_config):
                 generated_content += chunk
-                yield {
-                    "type": "content",
-                    "content": chunk,
-                    "timings": None,
-                }
-            if selected_product_ids and not any(product_id in generated_content for product_id in selected_product_ids):
+                final_chunk_count += 1
+                if chunk and not first_final_chunk_logged:
+                    logger.info(
+                        "[FinalStream] query=%s | mode=final | first_delta_after=%ss | chunk_len=%s",
+                        user_query,
+                        round(time.perf_counter() - t3, 3),
+                        len(chunk),
+                    )
+                    first_final_chunk_logged = True
+                sanitized_chunk = self._sanitize_user_reply_chunk(chunk)
+                if sanitized_chunk:
+                    yield {
+                        "type": "content",
+                        "content": sanitized_chunk,
+                        "timings": None,
+                    }
+            if generated_content.strip():
+                pass
+            else:
                 fallback_reply = self._build_deterministic_final_reply(user_query, selected_products)
                 if fallback_reply:
                     yield self._debug_chunk(
                         "organizing_results",
-                        "最终回复未引用候选ID，追加确定性兜底",
+                        "最终回复为空，改用确定性兜底",
                         selected_product_ids=selected_product_ids,
-                        generated_product_ids=re.findall(r"p_[a-z]+_\d+", generated_content),
                     )
                     yield {
                         "type": "content",
-                        "content": fallback_reply,
+                        "content": self._sanitize_user_reply(fallback_reply),
                         "timings": None,
                     }
             elapsed = round(time.perf_counter() - t3, 3)
             logger.debug("      LLM 流式响应完成 | 耗时: %ss", elapsed)
+            logger.info(
+                "[FinalStream] query=%s | mode=final | chunks=%s | elapsed=%ss | generated_len=%s",
+                user_query,
+                final_chunk_count,
+                elapsed,
+                len(generated_content),
+            )
         except Exception as e:
             elapsed = round(time.perf_counter() - t3, 3)
             logger.error("      最终 LLM 调用异常 | 耗时: %ss | %s: %s", elapsed, type(e).__name__, e)
@@ -1651,6 +2063,17 @@ class ToolChatService:
                 continue
 
             product_ids = re.findall(r'[psc]_[a-z]+_\d+(?:_\d+)?', content)
+            product_lookup_ids = [pid for pid in product_ids if pid.startswith("p_")]
+            if product_lookup_ids:
+                lookup = sqlite_product_search_service.get_products_by_ids(product_lookup_ids)
+                if lookup.get("ok"):
+                    for item in lookup.get("items") or []:
+                        title = str(item.get("title") or "").strip()
+                        brand = str(item.get("brand") or "").strip()
+                        if title:
+                            product_mentions.append(f"名称: {title}")
+                        if brand:
+                            product_mentions.append(f"品牌: {brand}")
 
             brands = re.findall(
                 r'(华为|小米|苹果|三星|OPPO|vivo|荣耀|联想|戴尔|惠普|'
@@ -1663,8 +2086,6 @@ class ToolChatService:
 
             backtick_names = re.findall(r'`([^`]{2,50})`', content)
 
-            for pid in product_ids:
-                product_mentions.append(f"商品ID: {pid}")
             for brand in set(brands):
                 product_mentions.append(f"品牌: {brand}")
             for name in backtick_names[:5]:

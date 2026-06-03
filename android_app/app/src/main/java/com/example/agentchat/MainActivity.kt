@@ -40,7 +40,9 @@ data class ChatMessage(
     val content: String,
     val thinking: String? = null,
     val timings: Map<String, Any>? = null,
-    val analysisExpanded: Boolean = true
+    val analysisExpanded: Boolean = true,
+    val processingStatus: String? = null,
+    val streaming: Boolean = false
 )
 data class ChatRequest(
     val messages: List<ChatMessage>,
@@ -55,6 +57,17 @@ data class ChatResponse(
     @SerializedName("history_saved") val historySaved: Boolean = true,
     @SerializedName("conv_id") val convId: String? = null
 )
+data class SelectedProduct(
+    val rank: Int = 0,
+    @SerializedName("product_id") val productId: String = "",
+    val title: String = "",
+    val brand: String = "",
+    val category: String = "",
+    @SerializedName("sub_category") val subCategory: String = "",
+    @SerializedName("base_price") val basePrice: Any? = null,
+    val source: String = "",
+    @SerializedName("recommendation_role") val recommendationRole: String = ""
+)
 data class StreamResponse(
     val content: String = "",
     val thinking: String = "",
@@ -64,6 +77,7 @@ data class StreamResponse(
     @SerializedName("analysis") val analysis: String = "",
     @SerializedName("summary") val summary: String = "",
     @SerializedName("selected_product_ids") val selectedProductIds: List<String> = emptyList(),
+    @SerializedName("selected_products") val selectedProducts: List<SelectedProduct> = emptyList(),
     @SerializedName("conv_id") val convId: String? = null,
     @SerializedName("history_saved") val historySaved: Boolean = true,
     val done: Boolean = false,
@@ -994,14 +1008,14 @@ class MainActivity : AppCompatActivity() {
             .build()
 
         var assistantMainMessageIndex = -1
-        var selectedProductsDisplayIndex = -1
         val fullContent = StringBuilder()
         val fullAnalysis = StringBuilder()
+        var currentProcessingStatus: String? = "正在分析需求..."
         var hasReceivedData = false
         
         // 先添加助手的空占位消息
         runOnUiThread {
-            messages.add(ChatMessage("assistant", "", "正在分析需求..."))
+            messages.add(ChatMessage("assistant", "", null, null, true, currentProcessingStatus))
             assistantMainMessageIndex = messages.size - 1
             adapter.notifyItemInserted(assistantMainMessageIndex)
             recyclerView.scrollToPosition(assistantMainMessageIndex)
@@ -1073,19 +1087,6 @@ class MainActivity : AppCompatActivity() {
                                                 return@runOnUiThread
                                             }
 
-                                            if (streamResponse.selectedProductIds.isNotEmpty()) {
-                                                val selectedText = "✅ 已选中商品ID: ${streamResponse.selectedProductIds.joinToString(", ")}"
-                                                if (selectedProductsDisplayIndex == -1) {
-                                                    messages.add(ChatMessage("assistant", selectedText))
-                                                    selectedProductsDisplayIndex = messages.size - 1
-                                                    adapter.notifyItemInserted(selectedProductsDisplayIndex)
-                                                } else {
-                                                    messages[selectedProductsDisplayIndex] = ChatMessage("assistant", selectedText)
-                                                    adapter.notifyItemChanged(selectedProductsDisplayIndex)
-                                                }
-                                                recyclerView.scrollToPosition(selectedProductsDisplayIndex)
-                                            }
-
                                             if (streamResponse.status.isNotEmpty()) {
                                                 if (streamResponse.phase == "saving_history") {
                                                     Toast.makeText(
@@ -1094,19 +1095,23 @@ class MainActivity : AppCompatActivity() {
                                                         Toast.LENGTH_SHORT
                                                     ).show()
                                                 } else if (fullContent.isEmpty() && assistantMainMessageIndex >= 0) {
-                                                    updateAssistantStatus(assistantMainMessageIndex, streamResponse.status)
+                                                    currentProcessingStatus = streamResponse.status
+                                                    val current = messages[assistantMainMessageIndex]
+                                                    messages[assistantMainMessageIndex] = current.copy(
+                                                        thinking = fullAnalysis.toString().ifEmpty { null },
+                                                        processingStatus = currentProcessingStatus,
+                                                    )
+                                                    adapter.notifyItemChanged(assistantMainMessageIndex)
                                                 }
                                             }
 
                                             if (streamResponse.analysis.isNotEmpty()) {
                                                 fullAnalysis.append(streamResponse.analysis)
                                                 if (assistantMainMessageIndex >= 0) {
-                                                    messages[assistantMainMessageIndex] = ChatMessage(
-                                                        "assistant",
-                                                        messages[assistantMainMessageIndex].content,
-                                                        fullAnalysis.toString(),
-                                                        messages[assistantMainMessageIndex].timings,
-                                                        messages[assistantMainMessageIndex].analysisExpanded,
+                                                    val current = messages[assistantMainMessageIndex]
+                                                    messages[assistantMainMessageIndex] = current.copy(
+                                                        thinking = fullAnalysis.toString(),
+                                                        processingStatus = currentProcessingStatus,
                                                     )
                                                     adapter.notifyItemChanged(assistantMainMessageIndex)
                                                 }
@@ -1114,18 +1119,22 @@ class MainActivity : AppCompatActivity() {
                                             
                                             // 处理正式内容片段
                                             if (streamResponse.content.isNotEmpty()) {
+                                                currentProcessingStatus = null
                                                 fullContent.append(streamResponse.content)
 
                                                 // 更新助手主消息内容
                                                 if (assistantMainMessageIndex >= 0) {
-                                                    messages[assistantMainMessageIndex] = ChatMessage(
-                                                        "assistant",
-                                                        fullContent.toString(),
-                                                        fullAnalysis.toString().ifEmpty { null },
-                                                        messages[assistantMainMessageIndex].timings,
-                                                        messages[assistantMainMessageIndex].analysisExpanded,
+                                                    val current = messages[assistantMainMessageIndex]
+                                                    messages[assistantMainMessageIndex] = current.copy(
+                                                        content = fullContent.toString(),
+                                                        thinking = fullAnalysis.toString().ifEmpty { null },
+                                                        processingStatus = null,
+                                                        streaming = true,
                                                     )
-                                                    adapter.notifyItemChanged(assistantMainMessageIndex)
+                                                    adapter.notifyItemChanged(
+                                                        assistantMainMessageIndex,
+                                                        ChatAdapter.PAYLOAD_STREAMING_CONTENT
+                                                    )
                                                 }
                                                 recyclerView.scrollToPosition(assistantMainMessageIndex)
                                             }
@@ -1137,12 +1146,13 @@ class MainActivity : AppCompatActivity() {
                                                 
                                                 // 最终主消息保存回复内容和耗时数据
                                                 if (assistantMainMessageIndex >= 0) {
-                                                    messages[assistantMainMessageIndex] = ChatMessage(
-                                                        "assistant",
-                                                        fullContent.toString(),
-                                                        fullAnalysis.toString().ifEmpty { null },
-                                                        streamResponse.timings,
-                                                        messages[assistantMainMessageIndex].analysisExpanded,
+                                                    val current = messages[assistantMainMessageIndex]
+                                                    messages[assistantMainMessageIndex] = current.copy(
+                                                        content = fullContent.toString(),
+                                                        thinking = fullAnalysis.toString().ifEmpty { null },
+                                                        timings = streamResponse.timings,
+                                                        processingStatus = null,
+                                                        streaming = false,
                                                     )
                                                     adapter.notifyItemChanged(assistantMainMessageIndex)
                                                 }
@@ -1192,7 +1202,7 @@ class MainActivity : AppCompatActivity() {
         if (index >= 0 && index < messages.size) {
             val originalTimings = messages[index].timings
             val originalAnalysisExpanded = messages[index].analysisExpanded
-            messages[index] = ChatMessage("assistant", "", status, originalTimings, originalAnalysisExpanded)
+            messages[index] = ChatMessage("assistant", "", null, originalTimings, originalAnalysisExpanded, status)
             adapter.notifyItemChanged(index)
         }
     }

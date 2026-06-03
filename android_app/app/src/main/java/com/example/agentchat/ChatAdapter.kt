@@ -32,6 +32,7 @@ class ChatAdapter(private val messages: MutableList<ChatMessage>) : RecyclerView
     companion object {
         private const val VIEW_TYPE_USER = 1
         private const val VIEW_TYPE_ASSISTANT = 2
+        const val PAYLOAD_STREAMING_CONTENT = "streaming_content"
     }
 
     override fun getItemViewType(position: Int): Int {
@@ -58,8 +59,27 @@ class ChatAdapter(private val messages: MutableList<ChatMessage>) : RecyclerView
         val message = messages[position]
         when (holder) {
             is UserMessageViewHolder -> holder.bind(message.content)
-            is AssistantMessageViewHolder -> holder.bind(message.content, message.thinking, message.timings, message.analysisExpanded)
+            is AssistantMessageViewHolder -> holder.bind(
+                message.content,
+                message.thinking,
+                message.timings,
+                message.analysisExpanded,
+                message.processingStatus,
+                message.streaming,
+            )
         }
+    }
+
+    override fun onBindViewHolder(holder: RecyclerView.ViewHolder, position: Int, payloads: MutableList<Any>) {
+        val message = messages[position]
+        if (
+            holder is AssistantMessageViewHolder &&
+            payloads.contains(PAYLOAD_STREAMING_CONTENT)
+        ) {
+            holder.bindStreamingContent(message.content)
+            return
+        }
+        super.onBindViewHolder(holder, position, payloads)
     }
 
     override fun getItemCount(): Int = messages.size
@@ -94,14 +114,21 @@ class ChatAdapter(private val messages: MutableList<ChatMessage>) : RecyclerView
             analysisMessageText.keepSelectable()
         }
 
-        fun bind(content: String, analysis: String?, timings: Map<String, Any>?, analysisExpanded: Boolean) {
-            val trimmedContent = content.trim()
-            val statusAsAnalysis = isProcessingStatus(trimmedContent) && analysis.isNullOrBlank()
-            val displayContent = if (statusAsAnalysis) "" else content
-
-            if (displayContent.isNotBlank()) {
+        fun bind(
+            content: String,
+            analysis: String?,
+            timings: Map<String, Any>?,
+            analysisExpanded: Boolean,
+            processingStatus: String?,
+            streaming: Boolean,
+        ) {
+            if (content.isNotBlank()) {
                 textView.visibility = View.VISIBLE
-                renderMarkdown(textView, displayContent)
+                if (streaming) {
+                    bindStreamingContent(content)
+                } else {
+                    renderMarkdown(textView, content)
+                }
             } else {
                 textView.visibility = View.GONE
                 textView.text = ""
@@ -109,16 +136,21 @@ class ChatAdapter(private val messages: MutableList<ChatMessage>) : RecyclerView
             }
 
             copyReplyButton.setOnClickListener {
-                copyToClipboard(itemView, "assistant_reply", displayContent)
+                copyToClipboard(itemView, "assistant_reply", content)
             }
-            copyReplyButton.visibility = if (displayContent.isNotBlank()) View.VISIBLE else View.GONE
+            copyReplyButton.visibility = if (content.isNotBlank()) View.VISIBLE else View.GONE
 
-            val analysisToShow = if (statusAsAnalysis) trimmedContent else analysis?.trim().orEmpty()
+            val analysisBody = analysis?.trim().orEmpty()
+            val statusLine = processingStatus?.trim().orEmpty()
+            val analysisToShow = listOf(
+                analysisBody,
+                statusLine.takeIf { it.isNotBlank() }?.let { "· $it" }.orEmpty()
+            ).filter { it.isNotBlank() }.joinToString("\n\n")
             val hasAnalysis = analysisToShow.isNotBlank()
             analysisContainer.visibility = if (hasAnalysis) View.VISIBLE else View.GONE
             if (hasAnalysis) {
-                analysisHeaderText.text = if (statusAsAnalysis) "处理中" else "已思考"
-                analysisTimeText.text = if (statusAsAnalysis) "" else formatAnalysisTime(timings)
+                analysisHeaderText.text = if (statusLine.isNotBlank()) "思考中" else "已思考"
+                analysisTimeText.text = if (statusLine.isNotBlank()) "" else formatAnalysisTime(timings)
                 renderMarkdown(analysisMessageText, analysisToShow)
                 analysisMessageText.visibility = if (analysisExpanded) View.VISIBLE else View.GONE
                 analysisArrowText.text = if (analysisExpanded) "⌄" else "›"
@@ -141,16 +173,35 @@ class ChatAdapter(private val messages: MutableList<ChatMessage>) : RecyclerView
                 val parts = mutableListOf<String>()
                 timings["analysis_calls"]?.let { parts.add("思考 ${it}s") }
                 timings["vector_search"]?.let { parts.add("向量检索 ${it}s") }
+                timings["rag_rerank"]?.let { parts.add("RAG核验 ${it}s") }
                 timings["llm_calls"]?.let { parts.add("LLM推理 ${it}s") }
                 timings["tool_calls"]?.let { t ->
                     val rounds = timings["tool_rounds"]
                     if (rounds != null && (rounds as Number).toInt() > 0) parts.add("工具查询 ${t}s")
                 }
+                timings["parallel_overlap_saved_estimate"]?.let { parts.add("并行节省估算 ${it}s") }
                 timings["total"]?.let { parts.add("总计 ${it}s") }
                 timingsText.text = parts.joinToString(" | ")
             } else {
                 timingsText.visibility = View.GONE
             }
+        }
+
+        fun bindStreamingContent(content: String) {
+            if (content.isNotBlank()) {
+                textView.visibility = View.VISIBLE
+                if (textView.text.toString() != content) {
+                    textView.text = content
+                }
+            } else {
+                textView.visibility = View.GONE
+                textView.text = ""
+            }
+            textView.keepSelectable()
+            copyReplyButton.setOnClickListener {
+                copyToClipboard(itemView, "assistant_reply", content)
+            }
+            copyReplyButton.visibility = if (content.isNotBlank()) View.VISIBLE else View.GONE
         }
 
         private fun formatAnalysisTime(timings: Map<String, Any>?): String {
@@ -207,14 +258,6 @@ class ChatAdapter(private val messages: MutableList<ChatMessage>) : RecyclerView
             val clipboard = itemView.context.getSystemService(ClipboardManager::class.java)
             clipboard?.setPrimaryClip(ClipData.newPlainText(label, text))
             Toast.makeText(itemView.context, "已复制回复", Toast.LENGTH_SHORT).show()
-        }
-
-        private fun isProcessingStatus(content: String): Boolean {
-            if (content.isBlank()) return false
-            val keywords = listOf("正在分析", "正在查询", "正在整理", "正在重试")
-            if (keywords.any { content.contains(it) }) return true
-            return content.startsWith("🧭") || content.startsWith("🔎") || content.startsWith("🧠") ||
-                content.startsWith("⏳") || content.startsWith("🔄")
         }
 
     }

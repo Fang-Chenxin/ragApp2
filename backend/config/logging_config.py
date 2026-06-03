@@ -20,6 +20,22 @@ _FILE_FORMAT = "%(message)s"
 _DATE_FORMAT = "%Y-%m-%d %H:%M:%S"
 
 
+class _ConsoleProcessingNoiseFilter(logging.Filter):
+    """终端只保留用户真正需要看到的后端运行信息。"""
+
+    _QUIET_LOGGERS = (
+        "service.tool_chat",
+        "service.rag",
+        "service.sqlite_product",
+        "service.sqlite_product_query_tool",
+    )
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        if record.name.startswith(self._QUIET_LOGGERS) and record.levelno < logging.ERROR:
+            return False
+        return True
+
+
 def setup_logging(
     log_level: str = "DEBUG",
     log_file: Optional[str] = None,
@@ -51,6 +67,7 @@ def setup_logging(
     console_handler = logging.StreamHandler(sys.stdout)
     console_handler.setLevel(getattr(logging, console_level.upper(), logging.INFO))
     console_handler.setFormatter(logging.Formatter(_CONSOLE_FORMAT, _DATE_FORMAT))
+    console_handler.addFilter(_ConsoleProcessingNoiseFilter())
     root_logger.addHandler(console_handler)
 
     # 文件 handler：DEBUG 级别，完整格式

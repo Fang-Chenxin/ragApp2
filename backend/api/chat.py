@@ -245,6 +245,7 @@ async def list_models():
 
 
 @router.post("/chat")
+@router.post("/chat/stream")
 async def chat_endpoint(request: ChatRequest):
     """流式聊天接口（与 `/chat/stream` 等价） - 推荐统一使用流式调用以便客户端实时接收预览与调试信息"""
     try:
@@ -486,6 +487,7 @@ async def chat_endpoint(request: ChatRequest):
             headers={
                 "Cache-Control": "no-cache",
                 "Connection": "keep-alive",
+                "X-Accel-Buffering": "no",
             }
         )
 
@@ -495,7 +497,7 @@ async def chat_endpoint(request: ChatRequest):
         raise HTTPException(status_code=500, detail=error_msg)
 
 
-# 已统一为单一流式端点 `/chat`，`/chat/stream` 已移除。
+# `/chat/stream` 保留为兼容别名，返回格式与 `/chat` 完全一致。
 
 
 @router.post("/conversations/{user_id}")

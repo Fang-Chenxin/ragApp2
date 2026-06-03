@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import traceback
+import sqlite3
 from pathlib import Path
 from typing import Any, Optional, List, Dict
 
@@ -130,6 +131,56 @@ class SQLiteProductSearchService:
                 "total": 0,
                 "items": []
             }
+
+    def get_products_by_ids(self, product_ids: List[str]) -> dict[str, Any]:
+        """按 product_id 精确回查商品，作为目标商品白名单的数据库存在性校验。"""
+        clean_ids: List[str] = []
+        seen: set[str] = set()
+        for product_id in product_ids:
+            value = str(product_id or "").strip()
+            if not value or value in seen:
+                continue
+            seen.add(value)
+            clean_ids.append(value)
+
+        if not clean_ids:
+            return {"ok": True, "error": None, "total": 0, "items": []}
+
+        if not self.db_available:
+            return {
+                "ok": False,
+                "error": "SQLite 商品数据库未配置，无法校验目标商品是否存在。",
+                "total": 0,
+                "items": [],
+            }
+
+        placeholders = ",".join(["?"] * len(clean_ids))
+        sql = (
+            "SELECT product_id, title, brand, category, sub_category, base_price, image_path, marketing_desc "
+            f"FROM products WHERE product_id IN ({placeholders})"
+        )
+        try:
+            with sqlite3.connect(self.db_path) as conn:
+                conn.row_factory = sqlite3.Row
+                rows = conn.execute(sql, clean_ids).fetchall()
+        except Exception as e:
+            traceback.print_exc()
+            return {
+                "ok": False,
+                "error": f"{type(e).__name__}: {e}",
+                "total": 0,
+                "items": [],
+            }
+
+        by_id = {str(row["product_id"]): dict(row) for row in rows}
+        ordered_items = [by_id[product_id] for product_id in clean_ids if product_id in by_id]
+        return {
+            "ok": True,
+            "error": None,
+            "total": len(ordered_items),
+            "items": ordered_items,
+            "missing_product_ids": [product_id for product_id in clean_ids if product_id not in by_id],
+        }
 
     def _mock_search_by_rule_parsed_text(self, text: str, limit: int, show_skus: bool) -> dict[str, Any]:
         """模拟自然语言查询结果（当数据库不可用时）"""
