@@ -155,7 +155,7 @@ class LLMService:
         Returns:
             模型生成的回复内容
         """
-        temp = temperature or settings.rag_temperature
+        temp = settings.rag_temperature if temperature is None else temperature
         client, temp_http_client = self._resolve_client(model_config)
 
         try:
@@ -191,7 +191,7 @@ class LLMService:
         Returns:
             完整的 ChatCompletion response 对象
         """
-        temp = temperature or settings.rag_temperature
+        temp = settings.rag_temperature if temperature is None else temperature
         client, temp_http_client = self._resolve_client(model_config)
 
         kwargs: Dict[str, Any] = {
@@ -226,7 +226,7 @@ class LLMService:
         Yields:
             模型生成的回复内容片段
         """
-        temp = temperature or settings.rag_temperature
+        temp = settings.rag_temperature if temperature is None else temperature
         client, temp_http_client = self._resolve_client(model_config)
 
         try:
@@ -261,7 +261,7 @@ class LLMService:
         Yields:
             Dict包含 "thinking" 或 "content" 键
         """
-        temp = temperature or settings.rag_temperature
+        temp = settings.rag_temperature if temperature is None else temperature
         client, temp_http_client = self._resolve_client(model_config)
 
         stream_kwargs: Dict[str, Any] = {

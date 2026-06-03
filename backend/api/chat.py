@@ -382,6 +382,17 @@ async def chat_endpoint(request: ChatRequest):
                         }
                         yield f"data: {json.dumps(data, ensure_ascii=False)}\n\n"
 
+                    elif chunk_type == "rag_sources":
+                        data = {
+                            "status": chunk.get("content", ""),
+                            "phase": "rag_sources",
+                            "agent": "shopping_agent",
+                            "rag_sources": chunk.get("rag_sources", []),
+                            "conv_id": current_conv_id,
+                            "done": False,
+                        }
+                        yield f"data: {json.dumps(data, ensure_ascii=False)}\n\n"
+
                     if chunk_type == "content":
                         content = chunk.get("content", "")
                         full_reply += content
@@ -397,10 +408,11 @@ async def chat_endpoint(request: ChatRequest):
 
                         if timings:
                             logger.info(
-                                "[Timings] user=%s | 分析=%ss | 向量检索=%ss | LLM推理=%ss(%s轮) | SQLite工具查询=%ss(%s轮) | 总计=%ss",
+                                "[Timings] user=%s | 分析=%ss | 向量检索=%ss | RAG检查=%ss | LLM推理=%ss(%s轮) | SQLite工具查询=%ss(%s轮) | 总计=%ss",
                                 request.user_id,
                                 timings.get('analysis_calls', '-'),
                                 timings.get('vector_search', '-'),
+                                timings.get('rag_rerank', '-'),
                                 timings.get('llm_calls', '-'),
                                 timings.get('llm_rounds', '?'),
                                 timings.get('tool_calls', '-'),

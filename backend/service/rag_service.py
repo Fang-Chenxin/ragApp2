@@ -92,8 +92,32 @@ class VectorStore:
             f"   └── 存储路径: {settings.chroma_path}"
         )
 
-    def query(self, query_text: str, top_k: Optional[int] = None) -> List[str]:
-        """查询相似文档"""
+    @staticmethod
+    def format_results_as_context(results: List[Dict[str, Any]]) -> str:
+        """将带来源的检索结果格式化为可注入 prompt 的上下文。"""
+        lines: List[str] = []
+        for index, item in enumerate(results, start=1):
+            metadata = item.get("metadata") or {}
+            source_parts = []
+            for key, label in [
+                ("product_id", "商品ID"),
+                ("title", "商品"),
+                ("brand", "品牌"),
+                ("category", "分类"),
+                ("sub_category", "子分类"),
+                ("chunk_type", "片段类型"),
+            ]:
+                value = metadata.get(key)
+                if value:
+                    source_parts.append(f"{label}: {value}")
+
+            source_text = " | ".join(source_parts) or f"片段ID: {item.get('id', '')}"
+            lines.append(f"[知识片段 {index} | {source_text}]\n{item.get('content', '')}")
+
+        return "\n\n".join(lines)
+
+    def query_with_sources(self, query_text: str, top_k: Optional[int] = None) -> List[Dict[str, Any]]:
+        """查询相似文档，并返回文档内容、距离和商品来源 metadata。"""
         if not self.collection:
             raise RuntimeError("向量数据库未初始化")
 
@@ -101,12 +125,35 @@ class VectorStore:
 
         results = self.collection.query(
             query_texts=[query_text],
-            n_results=k
+            n_results=k,
+            include=["documents", "metadatas", "distances"],
         )
 
-        if results['documents'] and results['documents'][0]:
-            return results['documents'][0]
-        return []
+        documents = results.get("documents") or []
+        if not documents or not documents[0]:
+            return []
+
+        ids = (results.get("ids") or [[]])[0]
+        metadatas = (results.get("metadatas") or [[]])[0]
+        distances = (results.get("distances") or [[]])[0]
+
+        items: List[Dict[str, Any]] = []
+        for index, content in enumerate(documents[0]):
+            metadata = metadatas[index] if index < len(metadatas) and metadatas[index] else {}
+            items.append(
+                {
+                    "id": ids[index] if index < len(ids) else "",
+                    "content": content,
+                    "metadata": metadata,
+                    "distance": distances[index] if index < len(distances) else None,
+                }
+            )
+
+        return items
+
+    def query(self, query_text: str, top_k: Optional[int] = None) -> List[str]:
+        """查询相似文档，兼容旧调用，仅返回文档文本。"""
+        return [item["content"] for item in self.query_with_sources(query_text, top_k)]
 
     def add_document(
         self,
@@ -149,8 +196,8 @@ class RAGService:
         conversation_history: Optional[List[Dict[str, str]]] = None
     ) -> str:
         """使用 RAG 进行对话"""
-        context_docs = self.vector_store.query(user_query)
-        context_text = "\n".join([str(doc) for doc in context_docs])
+        context_docs = self.vector_store.query_with_sources(user_query)
+        context_text = self.vector_store.format_results_as_context(context_docs)
 
         system_prompt = f"""你是一个智能Agent对话助手。
 参考知识库内容：
@@ -178,8 +225,8 @@ class RAGService:
         conversation_history: Optional[List[Dict[str, str]]] = None
     ) -> AsyncGenerator[str, None]:
         """使用 RAG 进行流式对话"""
-        context_docs = self.vector_store.query(user_query)
-        context_text = "\n".join([str(doc) for doc in context_docs])
+        context_docs = self.vector_store.query_with_sources(user_query)
+        context_text = self.vector_store.format_results_as_context(context_docs)
 
         system_prompt = f"""你是一个智能Agent对话助手。
 参考知识库内容：
@@ -204,8 +251,8 @@ class RAGService:
         conversation_history: Optional[List[Dict[str, str]]] = None
     ) -> AsyncGenerator[Dict[str, str], None]:
         """使用 RAG 进行流式对话，包含思考过程"""
-        context_docs = self.vector_store.query(user_query)
-        context_text = "\n".join([str(doc) for doc in context_docs])
+        context_docs = self.vector_store.query_with_sources(user_query)
+        context_text = self.vector_store.format_results_as_context(context_docs)
 
         system_prompt = f"""你是一个智能Agent对话助手。
 参考知识库内容：
@@ -229,5 +276,4 @@ class RAGService:
 embedding_service = EmbeddingService()
 vector_store = VectorStore()
 rag_service: Optional[RAGService] = None
-
 
