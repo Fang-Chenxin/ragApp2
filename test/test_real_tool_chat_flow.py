@@ -33,7 +33,7 @@ sys.path.insert(0, str(BACKEND))
 from config.settings import settings
 from service.llm_service import llm_service
 from service.rag_service import embedding_service, vector_store
-from service.sqlite_product_search_service import sqlite_product_search_service
+from service.product_search.sqlite_search import sqlite_product_search_service
 from service.tool_chat_service import ToolChatService
 
 # ── 抑制 tool_chat_service 的 logger.warning 干扰输出 ──

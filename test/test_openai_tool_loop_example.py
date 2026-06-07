@@ -21,7 +21,7 @@ from openai import APIConnectionError, APITimeoutError, OpenAI
 
 # 添加后端路径以导入查询引擎
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "backend"))
-from service.query_engine import agent_search_by_rule_parsed_text, agent_search_products
+from service.product_search.engine import agent_search_by_rule_parsed_text, agent_search_products
 
 TOOL_NAME = "query_products"
 TOOL_SPEC: dict[str, Any] = {

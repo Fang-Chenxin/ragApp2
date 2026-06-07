@@ -5,8 +5,8 @@ import json
 import re
 from typing import Any, Dict, List, Optional
 
-from .sqlite_product_query_tool import run_tool
-from .sqlite_product_search_service import sqlite_product_search_service
+from ..product_search.query_tool import run_tool
+from ..product_search.sqlite_search import sqlite_product_search_service
 from config.logging_config import get_logger
 
 logger = get_logger("service.tool_chat")

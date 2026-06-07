@@ -9,7 +9,7 @@ from typing import Any, Optional, List, Dict
 from config.settings import settings
 from config.logging_config import get_logger
 
-from service.query_engine import (
+from .engine import (
     DEFAULT_DB_PATH,
     DEFAULT_ONTOLOGY_PATH,
     agent_search_by_rule_parsed_text,
@@ -55,7 +55,7 @@ class SQLiteProductSearchService:
         """规则解析的自然语言查询接口
         
         Args:
-            text: 自然语言查询文本（通过 query_engine 的规则和词表解析）
+            text: 自然语言查询文本（通过 product_search.engine 的规则和词表解析）
             limit: 返回结果数量限制
             show_skus: 是否显示 SKU 详情
         

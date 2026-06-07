@@ -27,7 +27,7 @@ class _ConsoleProcessingNoiseFilter(logging.Filter):
         "service.tool_chat",
         "service.rag",
         "service.sqlite_product",
-        "service.sqlite_product_query_tool",
+        "service.product_search.query_tool",
     )
 
     def filter(self, record: logging.LogRecord) -> bool:

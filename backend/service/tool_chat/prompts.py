@@ -4,7 +4,7 @@ from __future__ import annotations
 import re
 from typing import Any, Dict, List, Optional
 
-from .sqlite_product_search_service import sqlite_product_search_service
+from ..product_search.sqlite_search import sqlite_product_search_service
 
 
 class ToolChatPromptMixin:

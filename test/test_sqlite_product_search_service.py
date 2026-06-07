@@ -7,8 +7,8 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))) + "/backend")
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from service.sqlite_product_search_service import sqlite_product_search_service
-from service.sqlite_product_query_tool import get_tool_spec, run_tool
+from service.product_search.sqlite_search import sqlite_product_search_service
+from service.product_search.query_tool import get_tool_spec, run_tool
 
 
 async def test_sqlite_product_search_service():

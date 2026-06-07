@@ -7,12 +7,12 @@ import time
 from typing import Any, Dict, List, Optional
 
 from .llm_service import LLMService
-from .sqlite_product_query_tool import get_tool_spec, run_tool
-from .tool_chat_product_selection import ToolChatProductSelectionMixin
-from .tool_chat_prompts import ToolChatPromptMixin
-from .tool_chat_rag import ToolChatRagMixin
-from .tool_chat_stream_pipeline import ToolChatStreamMixin
-from .tool_chat_trace import ToolChatTraceMixin
+from .product_search.query_tool import get_tool_spec, run_tool
+from .tool_chat.product_selection import ToolChatProductSelectionMixin
+from .tool_chat.prompts import ToolChatPromptMixin
+from .tool_chat.rag import ToolChatRagMixin
+from .tool_chat.stream_pipeline import ToolChatStreamMixin
+from .tool_chat.trace import ToolChatTraceMixin
 from .rag_service import VectorStore
 from config.logging_config import get_logger
 

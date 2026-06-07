@@ -18,7 +18,8 @@ sys.path.insert(0, str(BACKEND))
 from api.chat import ChatMessage, ChatRequest, chat_endpoint
 from service.history_service import HistoryService
 from service.tool_chat_service import ToolChatService
-from service.tool_chat_stream_pipeline import _StreamTaskGroup, settings as tool_chat_settings
+from service.tool_chat.stream_context import _StreamTaskGroup
+from service.tool_chat.stream_pipeline import settings as tool_chat_settings
 
 
 class HistoryServiceConcurrencyTest(unittest.TestCase):

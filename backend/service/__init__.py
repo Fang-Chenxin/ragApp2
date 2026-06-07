@@ -14,8 +14,8 @@ from .tool_chat_service import (
     tool_chat_service,
     ToolChatService,
 )
-from . import sqlite_product_query_tool
-from .sqlite_product_search_service import (
+from .product_search import query_tool as sqlite_product_query_tool
+from .product_search.sqlite_search import (
     sqlite_product_search_service,
     SQLiteProductSearchService,
 )

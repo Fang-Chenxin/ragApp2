@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from typing import Any, Dict, List, Optional
 
-from .sqlite_product_search_service import sqlite_product_search_service
+from .sqlite_search import sqlite_product_search_service
 
 
 def get_tool_spec() -> dict[str, Any]:

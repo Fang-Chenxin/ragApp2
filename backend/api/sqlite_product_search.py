@@ -170,7 +170,7 @@ async def get_tool_spec():
         工具调用规范
     """
     try:
-        from service.sqlite_product_query_tool import get_tool_spec as get_sqlite_query_tool_spec
+        from service.product_search.query_tool import get_tool_spec as get_sqlite_query_tool_spec
 
         return get_sqlite_query_tool_spec()
         
@@ -194,7 +194,7 @@ async def run_tool(request: ToolCallRequest):
         工具执行结果
     """
     try:
-        from service.sqlite_product_query_tool import run_tool as run_sqlite_query_tool
+        from service.product_search.query_tool import run_tool as run_sqlite_query_tool
 
         result = run_sqlite_query_tool(request.tool_name, request.arguments)
         
