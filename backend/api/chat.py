@@ -4,6 +4,7 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 from typing import List, Optional, Dict, Any
 from config.logging_config import get_logger
+import asyncio
 import fnmatch
 import httpx
 import json
@@ -12,6 +13,7 @@ import re
 logger = get_logger("api.chat")
 router = APIRouter(prefix="/api", tags=["chat"])
 _DISCOVERED_MODEL_CONFIGS: Dict[str, Dict[str, str]] = {}
+_DISCOVERY_LOCK = asyncio.Lock()
 
 
 class ChatMessage(BaseModel):
@@ -134,6 +136,18 @@ async def _discover_models_from_sources() -> List[Dict[str, str]]:
     """从服务端配置的 OpenAI-compatible 来源发现模型，并缓存其连接配置。"""
     from config.settings import settings
 
+    if _DISCOVERED_MODEL_CONFIGS:
+        return list(_DISCOVERED_MODEL_CONFIGS.values())
+
+    async with _DISCOVERY_LOCK:
+        if _DISCOVERED_MODEL_CONFIGS:
+            return list(_DISCOVERED_MODEL_CONFIGS.values())
+
+        return await _discover_models_from_sources_unlocked(settings)
+
+
+async def _discover_models_from_sources_unlocked(settings) -> List[Dict[str, str]]:
+    """执行实际模型发现；调用方负责并发保护。"""
     discovered: List[Dict[str, str]] = []
     for source in settings.llm_model_discovery_sources:
         models_url = source["base_url"].rstrip("/") + "/models"
@@ -337,6 +351,38 @@ async def chat_endpoint(request: ChatRequest):
             full_analysis = ""
             analysis_summary = ""
             timings = None
+            history_saved = False
+
+            def save_history_once() -> bool:
+                nonlocal history_saved
+                if history_saved or not full_reply.strip():
+                    return history_saved
+
+                try:
+                    thinking_to_save = full_analysis.strip() or analysis_summary.strip() or None
+                    logger.info(
+                        "[ThinkingSave] user=%s | full_analysis_len=%d | summary_len=%d | thinking_to_save=%s",
+                        request.user_id,
+                        len(full_analysis),
+                        len(analysis_summary),
+                        "有" if thinking_to_save else "无",
+                    )
+                    history_service.save_message(request.user_id, current_conv_id, "user", request.user_query)
+                    history_service.save_message(
+                        request.user_id,
+                        current_conv_id,
+                        "assistant",
+                        full_reply,
+                        thinking=thinking_to_save,
+                    )
+                    if thinking_to_save:
+                        logger.debug("分析完整内容:\n%s", thinking_to_save)
+                    history_saved = True
+                except Exception as e:
+                    logger.error("保存对话历史失败: %s", e)
+                    history_saved = False
+                return history_saved
+
             try:
                 async for chunk in tool_chat_service.chat_with_tools_stream(
                     user_query=request.user_query,
@@ -430,29 +476,7 @@ async def chat_endpoint(request: ChatRequest):
                         }
                         yield f"data: {json.dumps(save_status, ensure_ascii=False)}\n\n"
 
-                        try:
-                            thinking_to_save = full_analysis.strip() or analysis_summary.strip() or None
-                            logger.info(
-                                "[ThinkingSave] user=%s | full_analysis_len=%d | summary_len=%d | thinking_to_save=%s",
-                                request.user_id,
-                                len(full_analysis),
-                                len(analysis_summary),
-                                "有" if thinking_to_save else "无",
-                            )
-                            history_service.save_message(request.user_id, current_conv_id, "user", request.user_query)
-                            history_service.save_message(
-                                request.user_id,
-                                current_conv_id,
-                                "assistant",
-                                full_reply,
-                                thinking=thinking_to_save,
-                            )
-                            if thinking_to_save:
-                                logger.debug("分析完整内容:\n%s", thinking_to_save)
-                            history_saved = True
-                        except Exception as e:
-                            logger.error("保存对话历史失败: %s", e)
-                            history_saved = False
+                        save_history_once()
 
                         data = {
                             "content": "",
@@ -480,6 +504,9 @@ async def chat_endpoint(request: ChatRequest):
                     "done": True
                 }
                 yield f"data: {json.dumps(error_data, ensure_ascii=False)}\n\n"
+            finally:
+                if not history_saved and full_reply.strip():
+                    save_history_once()
 
         return StreamingResponse(
             generate_stream(),

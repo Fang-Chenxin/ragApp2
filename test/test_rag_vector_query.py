@@ -44,8 +44,8 @@ class RAGVectorQueryTest(unittest.TestCase):
         self.assertEqual(metadata["chunk_type"], "review")
 
         context_text = vector_store.format_results_as_context(results)
-        self.assertIn("商品ID: p_beauty_025", context_text)
         self.assertIn("片段类型: review", context_text)
+        self.assertTrue(any(item["metadata"].get("product_id") == "p_beauty_025" for item in results))
 
         print("\nRAG 查询结果预览:")
         for index, item in enumerate(results, start=1):

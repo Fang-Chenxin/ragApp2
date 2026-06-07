@@ -24,6 +24,7 @@ Agent guidance:
 from __future__ import annotations
 
 import argparse
+import functools
 import json
 import sqlite3
 import traceback
@@ -35,8 +36,10 @@ from typing import Any
 _DATA_DIR = Path(__file__).resolve().parent.parent.parent / "ecommerce_agent_dataset"
 DEFAULT_DB_PATH = _DATA_DIR / "ecommerce.db"
 DEFAULT_ONTOLOGY_PATH = _DATA_DIR / "attribute_ontology.json"
+_REVERSE_INDEX_CACHE: dict[int, tuple[dict[str, list[str]], int, dict[str, str]]] = {}
 
 
+@functools.lru_cache(maxsize=8)
 def load_ontology(ontology_path: Path) -> dict[str, Any]:
     if not ontology_path.exists():
         return {"brands": {}, "families": {}, "category_scopes": {}, "category_aliases": {}}
@@ -54,11 +57,19 @@ def normalize(s: str) -> str:
 
 
 def build_reverse_index(mapping: dict[str, list[str]]) -> dict[str, str]:
+    cache_key = id(mapping)
+    cached = _REVERSE_INDEX_CACHE.get(cache_key)
+    if cached and cached[0] is mapping and cached[1] == len(mapping):
+        return cached[2]
+
     reverse: dict[str, str] = {}
     for canonical, variants in mapping.items():
         reverse[normalize(canonical).lower()] = canonical
         for value in variants:
             reverse[normalize(value).lower()] = canonical
+    if len(_REVERSE_INDEX_CACHE) > 64:
+        _REVERSE_INDEX_CACHE.clear()
+    _REVERSE_INDEX_CACHE[cache_key] = (mapping, len(mapping), reverse)
     return reverse
 
 

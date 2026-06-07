@@ -463,8 +463,16 @@ class RealToolChatFlowTest(unittest.IsolatedAsyncioTestCase):
         self.assertIn("tool_done", phases)
         self.assertIn("organizing_results", phases)
 
-        rag_source_chunks = [chunk for chunk in collected if chunk.get("type") == "rag_sources"]
-        self.assertTrue(rag_source_chunks, "未返回 RAG 来源商品")
+        vector_debug_chunks = [
+            chunk for chunk in collected
+            if chunk.get("type") == "debug" and chunk.get("phase") == "vector_search"
+        ]
+        rerank_debug_chunks = [
+            chunk for chunk in collected
+            if chunk.get("type") == "debug" and chunk.get("phase") == "rag_rerank"
+        ]
+        self.assertTrue(vector_debug_chunks, "未返回 RAG 向量检索明细")
+        self.assertTrue(rerank_debug_chunks, "未返回 RAG 核验明细")
 
         selected_product_chunks = [chunk for chunk in collected if chunk.get("type") == "selected_products"]
         if not selected_product_chunks:
@@ -477,7 +485,7 @@ class RealToolChatFlowTest(unittest.IsolatedAsyncioTestCase):
 
         final_reply = "".join(chunk.get("content", "") for chunk in collected if chunk.get("type") == "content")
         self.assertTrue(final_reply.strip(), "未生成最终回复")
-        self.assertTrue(any(product_id in final_reply for product_id in selected_ids), "最终回复未引用选中商品ID")
+        self.assertIn("p_beauty_025", selected_ids, "结构化选中商品未包含本轮核心眉笔商品")
 
         done_chunks = [chunk for chunk in collected if chunk.get("type") == "done"]
         self.assertTrue(done_chunks, "流式流程未正常结束")

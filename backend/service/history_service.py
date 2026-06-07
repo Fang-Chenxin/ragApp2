@@ -1,4 +1,6 @@
 """对话历史服务层 - 管理用户对话历史和多会话"""
+from contextlib import contextmanager
+import fcntl
 import json
 import os
 import uuid
@@ -52,6 +54,39 @@ class HistoryService:
         user_dir = self._get_user_dir(user_id)
         return os.path.join(user_dir, "meta.json")
 
+    def _get_lock_file(self, file_path: str) -> str:
+        return f"{file_path}.lock"
+
+    @contextmanager
+    def _file_lock(self, file_path: str):
+        lock_path = self._get_lock_file(file_path)
+        os.makedirs(os.path.dirname(lock_path), exist_ok=True)
+        with open(lock_path, "a", encoding="utf-8") as lock_file:
+            fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
+            try:
+                yield
+            finally:
+                fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
+
+    def _atomic_write_json(self, file_path: str, data) -> None:
+        os.makedirs(os.path.dirname(file_path), exist_ok=True)
+        tmp_path = f"{file_path}.{uuid.uuid4().hex}.tmp"
+        try:
+            with open(tmp_path, "w", encoding="utf-8") as f:
+                json.dump(data, f, ensure_ascii=False, indent=2)
+                f.flush()
+                os.fsync(f.fileno())
+            os.replace(tmp_path, file_path)
+        finally:
+            if os.path.exists(tmp_path):
+                os.remove(tmp_path)
+
+    def _read_json_file(self, file_path: str, default):
+        if not os.path.exists(file_path):
+            return default
+        with open(file_path, "r", encoding="utf-8") as f:
+            return json.load(f)
+
     def _load_user_meta(self, user_id: str) -> Dict:
         """加载用户元数据"""
         meta_file = self._get_user_meta_file(user_id)
@@ -66,8 +101,8 @@ class HistoryService:
     def _save_user_meta(self, user_id: str, meta: Dict):
         """保存用户元数据"""
         meta_file = self._get_user_meta_file(user_id)
-        with open(meta_file, 'w', encoding='utf-8') as f:
-            json.dump(meta, f, ensure_ascii=False, indent=2)
+        with self._file_lock(meta_file):
+            self._atomic_write_json(meta_file, meta)
 
     def create_conversation(self, user_id: str, title: Optional[str] = None) -> str:
         """创建新会话
@@ -109,8 +144,8 @@ class HistoryService:
         
         # 保存空会话文件
         conv_file = self._get_conv_file(user_id, conv_id)
-        with open(conv_file, 'w', encoding='utf-8') as f:
-            json.dump([], f, ensure_ascii=False, indent=2)
+        with self._file_lock(conv_file):
+            self._atomic_write_json(conv_file, [])
         
         # 更新用户元数据
         meta["current_conv"] = conv_id
@@ -235,28 +270,28 @@ class HistoryService:
         """
         file_path = self._get_conv_file(user_id, conv_id)
 
-        # 读取现有历史
-        history = self.load_history(user_id, conv_id)
+        with self._file_lock(file_path):
+            try:
+                history = self._read_json_file(file_path, [])
+            except (json.JSONDecodeError, IOError) as e:
+                logger.error("读取历史记录失败，已使用空历史继续写入: %s", e)
+                history = []
 
-        # 添加新消息
-        message = {
-            "role": role,
-            "content": content,
-            "timestamp": datetime.now().isoformat()
-        }
-        if thinking:
-            # 双重清洗：去除思考过程前后的空白换行，避免无意义的 \n 残留
-            cleaned = thinking.strip()
-            if cleaned:
-                message["thinking"] = cleaned
-        history.append(message)
+            message = {
+                "role": role,
+                "content": content,
+                "timestamp": datetime.now().isoformat()
+            }
+            if thinking:
+                # 双重清洗：去除思考过程前后的空白换行，避免无意义的 \n 残留
+                cleaned = thinking.strip()
+                if cleaned:
+                    message["thinking"] = cleaned
+            history.append(message)
 
-        # 写入文件
-        with open(file_path, 'w', encoding='utf-8') as f:
-            json.dump(history, f, ensure_ascii=False, indent=2)
-        
-        # 更新元数据中的消息计数和最后消息
-        self._update_conv_meta(user_id, conv_id, len(history), content)
+            self._atomic_write_json(file_path, history)
+            # 更新元数据中的消息计数和最后消息
+            self._update_conv_meta(user_id, conv_id, len(history), content)
 
     def _update_conv_meta(self, user_id: str, conv_id: str, message_count: int, last_message: str):
         """更新会话元数据"""
@@ -327,8 +362,8 @@ class HistoryService:
 
         if os.path.exists(file_path):
             try:
-                with open(file_path, 'w', encoding='utf-8') as f:
-                    json.dump([], f, ensure_ascii=False, indent=2)
+                with self._file_lock(file_path):
+                    self._atomic_write_json(file_path, [])
                 self._update_conv_meta(user_id, conv_id, 0, "")
                 return True
             except OSError as e:

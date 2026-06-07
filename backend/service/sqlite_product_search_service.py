@@ -159,10 +159,11 @@ class SQLiteProductSearchService:
             "SELECT product_id, title, brand, category, sub_category, base_price, image_path, marketing_desc "
             f"FROM products WHERE product_id IN ({placeholders})"
         )
+        conn: Optional[sqlite3.Connection] = None
         try:
-            with sqlite3.connect(self.db_path) as conn:
-                conn.row_factory = sqlite3.Row
-                rows = conn.execute(sql, clean_ids).fetchall()
+            conn = sqlite3.connect(self.db_path)
+            conn.row_factory = sqlite3.Row
+            rows = conn.execute(sql, clean_ids).fetchall()
         except Exception as e:
             traceback.print_exc()
             return {
@@ -171,6 +172,9 @@ class SQLiteProductSearchService:
                 "total": 0,
                 "items": [],
             }
+        finally:
+            if conn is not None:
+                conn.close()
 
         by_id = {str(row["product_id"]): dict(row) for row in rows}
         ordered_items = [by_id[product_id] for product_id in clean_ids if product_id in by_id]
