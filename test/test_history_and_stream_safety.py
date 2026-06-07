@@ -17,7 +17,8 @@ sys.path.insert(0, str(BACKEND))
 
 from api.chat import ChatMessage, ChatRequest, chat_endpoint
 from service.history_service import HistoryService
-from service.tool_chat_service import ToolChatService, _StreamTaskGroup
+from service.tool_chat_service import ToolChatService
+from service.tool_chat_stream_pipeline import _StreamTaskGroup, settings as tool_chat_settings
 
 
 class HistoryServiceConcurrencyTest(unittest.TestCase):
@@ -128,6 +129,50 @@ class ToolPlanningMessagesTest(unittest.TestCase):
         self.assertIn("商品查询规划子角色", messages[0]["content"])
         self.assertEqual(messages[1]["content"], "上一轮回复")
         self.assertEqual(messages[2]["content"], "当前问题")
+
+
+class ToolChatStreamPipelineTest(unittest.IsolatedAsyncioTestCase):
+    async def test_pipeline_stream_can_complete_without_tools(self):
+        class FakeLLM:
+            connected = True
+            model = "fake"
+
+            async def chat_stream(self, messages, model=None, model_config=None):
+                yield "分析"
+
+            async def chat_with_tools(self, **kwargs):
+                message = SimpleNamespace(content="这是直接回复", tool_calls=None)
+                return SimpleNamespace(choices=[SimpleNamespace(message=message)], usage=None)
+
+        service = ToolChatService(vector_store=SimpleNamespace(), llm=FakeLLM())
+
+        async def fake_context_docs(query):
+            return [], None
+
+        async def fake_rerank(query, docs, model=None, model_config=None):
+            return docs, None, {"results": [], "kept": []}
+
+        async def fake_direct_query(ctx):
+            return [], 0.0, None
+
+        service._query_context_docs_with_timeout = fake_context_docs
+        service._rerank_context_docs_with_llm = fake_rerank
+        service._stream_query_direct_selected_products = fake_direct_query
+
+        with patch.object(tool_chat_settings, "tool_chat_parallel_enabled", False):
+            chunks = [
+                chunk
+                async for chunk in service.chat_with_tools_stream(
+                    "随便聊聊",
+                    conversation_history=[],
+                    model="fake",
+                    model_config={"api_key": "test"},
+                )
+            ]
+
+        self.assertTrue(any(chunk.get("type") == "content" for chunk in chunks))
+        self.assertEqual(chunks[-1].get("type"), "done")
+        self.assertIn("vector_search", chunks[-1].get("timings") or {})
 
 
 if __name__ == "__main__":
