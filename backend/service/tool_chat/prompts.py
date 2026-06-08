@@ -5,6 +5,7 @@ import re
 from typing import Any, Dict, List, Optional
 
 from ..product_search.sqlite_search import sqlite_product_search_service
+from ..product_search.search_semantics_service import search_semantics_service
 
 
 class ToolChatPromptMixin:
@@ -79,6 +80,10 @@ class ToolChatPromptMixin:
         user_query: str,
     ) -> List[Dict[str, str]]:
         """构造商品搜索结构化计划子任务消息。"""
+        # 从语义表注入业务知识提示
+        semantic_hints = search_semantics_service.build_search_plan_hints(user_query)
+        hints_section = f"\n\n## 业务知识参考（来自语义表，必须遵守）\n{semantic_hints}" if semantic_hints else ""
+
         return [
             {
                 "role": "system",
@@ -94,7 +99,9 @@ class ToolChatPromptMixin:
                     "2. fallback 可以宽泛但必须相邻，例如口红可接受唇釉/唇膏；游戏本可接受笔记本电脑但不是食品/背包；"
                     "洗发水可接受洗护/洁面等美妆洗护，不可接受食品；连衣裙可接受女装/女士裤装等服饰，不可接受男款T恤优先。\n"
                     "3. 如果用户需求属于某个明确领域，allowed_categories 应只包含该领域。\n"
-                    "4. query_text 是第一轮检索文本，应尽量短而商品化；fallback_query_texts 是没有直接命中时的备用检索词。\n\n"
+                    "4. query_text 是第一轮检索文本，应尽量短而商品化；fallback_query_texts 是没有直接命中时的备用检索词。\n"
+                    "5. 如果下方「业务知识参考」中有 direct_terms、fallback_terms、category、sub_category 等信息，"
+                    "必须优先使用这些值，不要自行推断。\n\n"
                     "输出 JSON schema：\n"
                     "{\n"
                     "  \"target_product\": \"用户真正要找的商品\",\n"
@@ -108,7 +115,8 @@ class ToolChatPromptMixin:
                     "  \"forbidden_categories\": [\"禁止类目\"],\n"
                     "  \"fallback_notice_required\": true,\n"
                     "  \"reason\": \"一句话说明计划\"\n"
-                    "}\n\n"
+                    "}\n"
+                    f"{hints_section}\n\n"
                     f"{ToolChatPromptMixin._build_history_context(conversation_history, user_query)}"
                 ),
             },

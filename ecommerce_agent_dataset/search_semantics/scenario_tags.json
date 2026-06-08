@@ -1,0 +1,62 @@
+{
+  "学习": {
+    "query_terms": ["学习", "办公", "记笔记", "上网课", "学生"],
+    "preferred_sub_categories": ["平板电脑", "笔记本电脑"],
+    "ranking_hints": ["轻薄", "续航", "手写笔", "多任务", "护眼"]
+  },
+  "游戏": {
+    "query_terms": ["游戏", "打游戏", "电竞", "网游", "手游"],
+    "preferred_sub_categories": ["笔记本电脑", "智能手机"],
+    "ranking_hints": ["高性能", "高刷", "散热", "大屏", "大内存"]
+  },
+  "办公": {
+    "query_terms": ["办公", "工作", "商务", "生产力", "剪辑"],
+    "preferred_sub_categories": ["笔记本电脑", "平板电脑"],
+    "ranking_hints": ["轻薄", "续航", "性能", "屏幕", "接口"]
+  },
+  "通勤": {
+    "query_terms": ["通勤", "上班", "日常", "出行"],
+    "preferred_sub_categories": ["背包", "短袖T恤", "卫衣"],
+    "ranking_hints": ["轻便", "百搭", "舒适", "实用"]
+  },
+  "敏感肌": {
+    "query_terms": ["敏感肌", "敏感", "温和", "舒缓", "不刺激"],
+    "preferred_sub_categories": ["防晒", "面霜", "洁面", "精华"],
+    "ranking_hints": ["低刺激", "清爽", "修护屏障", "无香精"]
+  },
+  "户外": {
+    "query_terms": ["户外", "徒步", "登山", "露营", "旅行"],
+    "preferred_sub_categories": ["徒步鞋", "背包", "户外裤"],
+    "ranking_hints": ["防水", "透气", "耐磨", "轻量", "大容量"]
+  },
+  "跑步": {
+    "query_terms": ["跑步", "慢跑", "马拉松", "训练"],
+    "preferred_sub_categories": ["跑步鞋", "速干T恤", "运动短裤"],
+    "ranking_hints": ["缓震", "透气", "轻量", "支撑", "速干"]
+  },
+  "健身": {
+    "query_terms": ["健身", "瑜伽", "运动", "训练", "减肥"],
+    "preferred_sub_categories": ["瑜伽裤", "速干T恤", "运动短裤"],
+    "ranking_hints": ["弹力", "贴合", "速干", "舒适", "高腰"]
+  },
+  "护肤": {
+    "query_terms": ["护肤", "保湿", "补水", "抗老", "美白"],
+    "preferred_sub_categories": ["精华", "面霜", "面膜", "化妆水"],
+    "ranking_hints": ["保湿", "修护", "抗初老", "提亮", "温和"]
+  },
+  "早餐": {
+    "query_terms": ["早餐", "早饭", "代餐", "充饥"],
+    "preferred_sub_categories": ["坚果/零食", "咖啡", "牛奶", "酸奶", "方便食品"],
+    "ranking_hints": ["方便", "营养", "饱腹", "即食"]
+  },
+  "送礼": {
+    "query_terms": ["送礼", "礼物", "礼盒", "送人", "节日"],
+    "preferred_sub_categories": ["精华", "面霜", "坚果/零食", "咖啡"],
+    "ranking_hints": ["礼盒装", "品牌", "包装精美", "口碑"]
+  },
+  "减脂": {
+    "query_terms": ["减脂", "低卡", "低糖", "无糖", "0糖"],
+    "preferred_sub_categories": ["茶饮", "碳酸饮料", "酸奶"],
+    "ranking_hints": ["0糖", "低卡", "无糖", "代餐", "高蛋白"]
+  }
+}

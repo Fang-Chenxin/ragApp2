@@ -1,0 +1,152 @@
+{
+  "口红": {
+    "direct_terms": ["口红", "唇膏"],
+    "fallback_terms": ["唇釉", "唇彩", "唇部彩妆"],
+    "category": "美妆护肤"
+  },
+  "防晒霜": {
+    "direct_terms": ["防晒霜", "防晒乳", "防晒"],
+    "fallback_terms": ["隔离露", "隔离霜", "防晒喷雾"],
+    "category": "美妆护肤"
+  },
+  "洗发水": {
+    "direct_terms": ["洗发水", "洗发露"],
+    "fallback_terms": ["护发素", "护发精华", "洗护"],
+    "category": "美妆护肤"
+  },
+  "洁面": {
+    "direct_terms": ["洁面", "洗面奶", "洁面乳"],
+    "fallback_terms": ["卸妆", "洁面慕斯"],
+    "category": "美妆护肤"
+  },
+  "精华": {
+    "direct_terms": ["精华", "精华液", "精华露"],
+    "fallback_terms": ["肌底液", "修护液"],
+    "category": "美妆护肤"
+  },
+  "面霜": {
+    "direct_terms": ["面霜", "面乳"],
+    "fallback_terms": ["乳液", "面霜乳液"],
+    "category": "美妆护肤"
+  },
+  "面膜": {
+    "direct_terms": ["面膜"],
+    "fallback_terms": ["面贴膜", "涂抹面膜"],
+    "category": "美妆护肤"
+  },
+  "游戏本": {
+    "direct_terms": ["游戏本", "电竞本"],
+    "fallback_terms": ["高性能笔记本", "笔记本电脑", "轻薄本"],
+    "category": "数码电子"
+  },
+  "iPad": {
+    "direct_terms": ["iPad", "ipad"],
+    "fallback_terms": ["平板电脑", "平板"],
+    "category": "数码电子"
+  },
+  "MacBook": {
+    "direct_terms": ["MacBook", "macbook"],
+    "fallback_terms": ["笔记本电脑", "轻薄本"],
+    "category": "数码电子"
+  },
+  "手机": {
+    "direct_terms": ["手机", "智能手机"],
+    "fallback_terms": [],
+    "category": "数码电子"
+  },
+  "耳机": {
+    "direct_terms": ["耳机", "蓝牙耳机", "真无线耳机"],
+    "fallback_terms": ["头戴式耳机", "降噪耳机"],
+    "category": "数码电子"
+  },
+  "学习平板": {
+    "direct_terms": ["学习平板", "学生平板"],
+    "fallback_terms": ["平板电脑", "iPad"],
+    "category": "数码电子"
+  },
+  "办公笔记本": {
+    "direct_terms": ["办公笔记本", "轻薄本", "商务本"],
+    "fallback_terms": ["笔记本电脑", "高性能笔记本"],
+    "category": "数码电子"
+  },
+  "连衣裙": {
+    "direct_terms": ["连衣裙"],
+    "fallback_terms": ["半身裙", "裙装", "女装"],
+    "category": "服饰运动"
+  },
+  "跑步鞋": {
+    "direct_terms": ["跑步鞋", "跑鞋"],
+    "fallback_terms": ["运动鞋", "训练鞋"],
+    "category": "服饰运动"
+  },
+  "篮球鞋": {
+    "direct_terms": ["篮球鞋"],
+    "fallback_terms": ["运动鞋", "实战鞋"],
+    "category": "服饰运动"
+  },
+  "T恤": {
+    "direct_terms": ["T恤", "短袖T恤"],
+    "fallback_terms": ["短袖", "上衣", "速干T恤"],
+    "category": "服饰运动"
+  },
+  "卫衣": {
+    "direct_terms": ["卫衣"],
+    "fallback_terms": ["套头衫", "运动上衣", "外套"],
+    "category": "服饰运动"
+  },
+  "背包": {
+    "direct_terms": ["背包", "双肩包"],
+    "fallback_terms": ["户外包", "通勤包"],
+    "category": "服饰运动"
+  },
+  "瑜伽裤": {
+    "direct_terms": ["瑜伽裤", "紧身裤"],
+    "fallback_terms": ["运动裤", "健身裤", "打底裤"],
+    "category": "服饰运动"
+  },
+  "肉松面包": {
+    "direct_terms": ["肉松面包", "肉松饼"],
+    "fallback_terms": ["糕点", "点心", "面包", "饼干"],
+    "category": "食品饮料"
+  },
+  "甜甜圈": {
+    "direct_terms": ["甜甜圈"],
+    "fallback_terms": ["糕点", "点心", "面包", "饼干"],
+    "category": "食品饮料"
+  },
+  "猫粮": {
+    "direct_terms": ["猫粮"],
+    "fallback_terms": [],
+    "category": ""
+  },
+  "早餐": {
+    "direct_terms": ["早餐", "代餐"],
+    "fallback_terms": ["面包", "饼干", "糕点", "麦片", "咖啡"],
+    "category": "食品饮料"
+  },
+  "咖啡": {
+    "direct_terms": ["咖啡", "速溶咖啡"],
+    "fallback_terms": ["茶饮", "功能饮料"],
+    "category": "食品饮料"
+  },
+  "酸奶": {
+    "direct_terms": ["酸奶"],
+    "fallback_terms": ["牛奶", "乳饮品"],
+    "category": "食品饮料"
+  },
+  "方便面": {
+    "direct_terms": ["方便面", "泡面", "速食面"],
+    "fallback_terms": ["方便食品", "速食"],
+    "category": "食品饮料"
+  },
+  "坚果": {
+    "direct_terms": ["坚果", "每日坚果"],
+    "fallback_terms": ["零食", "干果"],
+    "category": "食品饮料"
+  },
+  "敏感肌": {
+    "direct_terms": ["敏感肌", "敏感肌肤"],
+    "fallback_terms": ["温和", "舒缓", "低刺激"],
+    "category": "美妆护肤"
+  }
+}

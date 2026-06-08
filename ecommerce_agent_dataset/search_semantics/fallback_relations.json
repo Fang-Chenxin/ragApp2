@@ -1,0 +1,65 @@
+{
+  "肉松面包": {
+    "acceptable": [
+      {"category": "食品饮料", "sub_category": "坚果/零食", "terms": ["肉松饼", "糕点", "点心", "饼干"], "role": "同类零食"},
+      {"category": "食品饮料", "sub_category": "方便食品", "terms": ["面包", "早餐"], "role": "早餐替代"},
+      {"category": "食品饮料", "sub_category": "酸奶", "terms": ["酸奶"], "role": "搭配饮品"}
+    ],
+    "forbidden_categories": ["美妆护肤", "数码电子", "服饰运动"]
+  },
+  "甜甜圈": {
+    "acceptable": [
+      {"category": "食品饮料", "sub_category": "坚果/零食", "terms": ["糕点", "点心", "饼干", "面包"], "role": "同类甜点零食"}
+    ],
+    "forbidden_categories": ["美妆护肤", "数码电子", "服饰运动"]
+  },
+  "游戏本": {
+    "acceptable": [
+      {"category": "数码电子", "sub_category": "笔记本电脑", "terms": ["高性能笔记本", "笔记本电脑", "轻薄本"], "role": "相邻笔记本"}
+    ],
+    "forbidden_categories": ["食品饮料", "美妆护肤", "服饰运动"]
+  },
+  "iPad": {
+    "acceptable": [
+      {"category": "数码电子", "sub_category": "平板电脑", "terms": ["平板电脑", "平板"], "role": "同类平板"}
+    ],
+    "forbidden_categories": ["食品饮料", "美妆护肤", "服饰运动"]
+  },
+  "MacBook": {
+    "acceptable": [
+      {"category": "数码电子", "sub_category": "笔记本电脑", "terms": ["笔记本电脑", "轻薄本", "高性能笔记本"], "role": "同类笔记本"}
+    ],
+    "forbidden_categories": ["食品饮料", "美妆护肤", "服饰运动"]
+  },
+  "口红": {
+    "acceptable": [
+      {"category": "美妆护肤", "sub_category": "唇釉", "terms": ["唇釉", "唇膏", "唇彩"], "role": "同类唇部彩妆"}
+    ],
+    "forbidden_categories": ["食品饮料", "数码电子", "服饰运动"]
+  },
+  "连衣裙": {
+    "acceptable": [
+      {"category": "服饰运动", "sub_category": "瑜伽裤", "terms": ["瑜伽裤", "紧身裤"], "role": "女装下装"},
+      {"category": "服饰运动", "sub_category": "卫衣", "terms": ["卫衣", "上衣"], "role": "女装上装"}
+    ],
+    "forbidden_categories": ["食品饮料", "数码电子", "美妆护肤"]
+  },
+  "猫粮": {
+    "acceptable": [],
+    "forbidden_categories": ["食品饮料", "美妆护肤", "数码电子", "服饰运动"]
+  },
+  "洗发水": {
+    "acceptable": [
+      {"category": "美妆护肤", "sub_category": "洁面", "terms": ["洁面", "洗面奶"], "role": "同品类洗护"},
+      {"category": "美妆护肤", "sub_category": "卸妆", "terms": ["卸妆"], "role": "同品类清洁"}
+    ],
+    "forbidden_categories": ["食品饮料", "数码电子", "服饰运动"]
+  },
+  "学习平板": {
+    "acceptable": [
+      {"category": "数码电子", "sub_category": "平板电脑", "terms": ["平板电脑", "iPad", "平板"], "role": "同类平板"},
+      {"category": "数码电子", "sub_category": "笔记本电脑", "terms": ["笔记本电脑", "轻薄本"], "role": "学习设备替代"}
+    ],
+    "forbidden_categories": ["食品饮料", "美妆护肤", "服饰运动"]
+  }
+}

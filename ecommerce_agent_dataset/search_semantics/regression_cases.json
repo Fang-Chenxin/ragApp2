@@ -1,0 +1,197 @@
+[
+  {
+    "id": "ipad_learning",
+    "query": "想买iPad平板学习用",
+    "expect": {
+      "must_include_match_type": "direct",
+      "allowed_product_ids": ["p_digital_013", "p_digital_024", "p_digital_025"],
+      "forbidden_product_ids": [],
+      "allowed_categories": ["数码电子"],
+      "forbidden_categories": ["食品饮料", "美妆护肤", "服饰运动"],
+      "must_reply_contains": ["iPad"],
+      "must_not_reply_contains": ["没有直接匹配"]
+    }
+  },
+  {
+    "id": "macbook_office",
+    "query": "推荐一台MacBook办公用",
+    "expect": {
+      "must_include_match_type": "direct",
+      "allowed_product_ids": ["p_digital_006", "p_digital_012", "p_digital_020"],
+      "forbidden_product_ids": [],
+      "allowed_categories": ["数码电子"],
+      "forbidden_categories": ["食品饮料", "美妆护肤", "服饰运动"],
+      "must_reply_contains": ["MacBook"],
+      "must_not_reply_contains": []
+    }
+  },
+  {
+    "id": "game_laptop",
+    "query": "想要游戏本打游戏",
+    "expect": {
+      "must_include_match_type": "any",
+      "allowed_product_ids": [],
+      "forbidden_product_ids": [],
+      "allowed_categories": ["数码电子"],
+      "forbidden_categories": ["食品饮料", "美妆护肤", "服饰运动"],
+      "must_reply_contains": [],
+      "must_not_reply_contains": ["电竞本", "大型游戏流畅"]
+    }
+  },
+  {
+    "id": "lipstick",
+    "query": "推荐一支口红",
+    "expect": {
+      "must_include_match_type": "any",
+      "allowed_product_ids": ["p_beauty_015"],
+      "forbidden_product_ids": [],
+      "allowed_categories": ["美妆护肤"],
+      "forbidden_categories": ["食品饮料", "数码电子", "服饰运动"],
+      "must_reply_contains": [],
+      "must_not_reply_contains": []
+    }
+  },
+  {
+    "id": "sunscreen",
+    "query": "有没有好用的防晒霜",
+    "expect": {
+      "must_include_match_type": "direct",
+      "allowed_product_ids": ["p_beauty_006", "p_beauty_010", "p_beauty_023"],
+      "forbidden_product_ids": [],
+      "allowed_categories": ["美妆护肤"],
+      "forbidden_categories": ["食品饮料", "数码电子", "服饰运动"],
+      "must_reply_contains": ["防晒"],
+      "must_not_reply_contains": []
+    }
+  },
+  {
+    "id": "running_shoes",
+    "query": "推荐跑步鞋",
+    "expect": {
+      "must_include_match_type": "direct",
+      "allowed_product_ids": ["p_clothes_007", "p_clothes_008", "p_clothes_009", "p_clothes_010"],
+      "forbidden_product_ids": [],
+      "allowed_categories": ["服饰运动"],
+      "forbidden_categories": ["食品饮料", "数码电子", "美妆护肤"],
+      "must_reply_contains": ["跑步"],
+      "must_not_reply_contains": []
+    }
+  },
+  {
+    "id": "yoga_pants",
+    "query": "想要瑜伽裤",
+    "expect": {
+      "must_include_match_type": "direct",
+      "allowed_product_ids": ["p_clothes_016"],
+      "forbidden_product_ids": [],
+      "allowed_categories": ["服饰运动"],
+      "forbidden_categories": ["食品饮料", "数码电子", "美妆护肤"],
+      "must_reply_contains": [],
+      "must_not_reply_contains": []
+    }
+  },
+  {
+    "id": "coffee",
+    "query": "推荐咖啡",
+    "expect": {
+      "must_include_match_type": "direct",
+      "allowed_product_ids": ["p_food_001", "p_food_002", "p_food_022", "p_food_023"],
+      "forbidden_product_ids": [],
+      "allowed_categories": ["食品饮料"],
+      "forbidden_categories": ["美妆护肤", "数码电子", "服饰运动"],
+      "must_reply_contains": ["咖啡"],
+      "must_not_reply_contains": []
+    }
+  },
+  {
+    "id": "yogurt",
+    "query": "有没有酸奶推荐",
+    "expect": {
+      "must_include_match_type": "direct",
+      "allowed_product_ids": ["p_food_008", "p_food_017"],
+      "forbidden_product_ids": [],
+      "allowed_categories": ["食品饮料"],
+      "forbidden_categories": ["美妆护肤", "数码电子", "服饰运动"],
+      "must_reply_contains": ["酸奶"],
+      "must_not_reply_contains": []
+    }
+  },
+  {
+    "id": "meat_bread",
+    "query": "想买肉松面包",
+    "expect": {
+      "must_include_match_type": "any",
+      "allowed_product_ids": ["p_food_010"],
+      "forbidden_product_ids": [],
+      "allowed_categories": ["食品饮料"],
+      "forbidden_categories": ["美妆护肤", "数码电子", "服饰运动"],
+      "must_reply_contains": [],
+      "must_not_reply_contains": []
+    }
+  },
+  {
+    "id": "cat_food_no_stock",
+    "query": "有没有猫粮",
+    "expect": {
+      "must_include_match_type": "any",
+      "allowed_product_ids": [],
+      "forbidden_product_ids": [],
+      "allowed_categories": [],
+      "forbidden_categories": ["美妆护肤", "数码电子", "服饰运动", "食品饮料"],
+      "must_reply_contains": [],
+      "must_not_reply_contains": []
+    }
+  },
+  {
+    "id": "sensitive_skin",
+    "query": "敏感肌适合什么防晒",
+    "expect": {
+      "must_include_match_type": "direct",
+      "allowed_product_ids": ["p_beauty_006", "p_beauty_010", "p_beauty_023"],
+      "forbidden_product_ids": [],
+      "allowed_categories": ["美妆护肤"],
+      "forbidden_categories": ["食品饮料", "数码电子", "服饰运动"],
+      "must_reply_contains": [],
+      "must_not_reply_contains": []
+    }
+  },
+  {
+    "id": "tshirt",
+    "query": "推荐T恤",
+    "expect": {
+      "must_include_match_type": "direct",
+      "allowed_product_ids": ["p_clothes_001", "p_clothes_002", "p_clothes_003", "p_clothes_020", "p_clothes_021"],
+      "forbidden_product_ids": [],
+      "allowed_categories": ["服饰运动"],
+      "forbidden_categories": ["食品饮料", "数码电子", "美妆护肤"],
+      "must_reply_contains": [],
+      "must_not_reply_contains": []
+    }
+  },
+  {
+    "id": "basketball_shoes",
+    "query": "推荐篮球鞋",
+    "expect": {
+      "must_include_match_type": "direct",
+      "allowed_product_ids": ["p_clothes_011", "p_clothes_012", "p_clothes_013"],
+      "forbidden_product_ids": [],
+      "allowed_categories": ["服饰运动"],
+      "forbidden_categories": ["食品饮料", "数码电子", "美妆护肤"],
+      "must_reply_contains": ["篮球"],
+      "must_not_reply_contains": []
+    }
+  },
+  {
+    "id": "earphones",
+    "query": "推荐蓝牙耳机",
+    "expect": {
+      "must_include_match_type": "direct",
+      "allowed_product_ids": [],
+      "forbidden_product_ids": [],
+      "allowed_categories": ["数码电子"],
+      "forbidden_categories": ["食品饮料", "美妆护肤", "服饰运动"],
+      "must_reply_contains": [],
+      "must_not_reply_contains": []
+    }
+  }
+]

@@ -194,7 +194,7 @@ class Settings(BaseSettings):
 
     @property
     def resolved_embedding_api_key(self) -> str:
-        """解析外部 embedding 使用的 API Key，优先级：显式字段 -> env 名 -> LLM key。"""
+        """解析外部 embedding 使用的 API Key，优先级：显式字段 -> env 名。"""
         if self.embedding_api_key.strip():
             return self.embedding_api_key.strip()
         env_key = self.embedding_api_key_env.strip()
@@ -202,7 +202,7 @@ class Settings(BaseSettings):
             key_from_env = self._get_env_value(env_key).strip()
             if key_from_env:
                 return key_from_env
-        return self.llm_api_key.strip()
+        return ""
 
     # Chroma 配置
     chroma_path: str = str(PROJECT_ROOT / "ecommerce_agent_dataset" / ".chroma")

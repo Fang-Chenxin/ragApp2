@@ -1,5 +1,29 @@
 # Changelog
 
+## [v1.1.0] - 2026-06-08
+
+### Added
+- ✨ 新增 6 个语义表文件（product_concepts / category_aliases / fallback_relations / brand_model_aliases / scenario_tags / regression_cases），为 SearchPlan 提供稳定业务知识输入 - [详细文档](docs/变更摘要/语义表驱动的商品搜索业务知识注入.md)
+- ✨ 新增 `search_semantics_service` 全局单例服务，提供语义表加载、匹配和查询能力 - [详细文档](docs/变更摘要/语义表驱动的商品搜索业务知识注入.md)
+- ✨ 新增 SearchPlan prompt 语义表注入，将品类别名、商品概念、品牌型号等业务知识注入 LLM system prompt - [详细文档](docs/变更摘要/语义表驱动的商品搜索业务知识注入.md)
+- ✨ 新增 `_apply_semantic_corrections()` 确定性修正，LLM 输出 SearchPlan 后用语义表规则自动修正品类值和约束 - [详细文档](docs/变更摘要/语义表驱动的商品搜索业务知识注入.md)
+- ✨ 新增数据校验脚本 `test/validate_search_semantics.py` - [详细文档](docs/变更摘要/语义表驱动的商品搜索业务知识注入.md)
+- ✨ 新增回归测试脚本 `test/test_search_plan_regression.py`，支持模拟模式和 `--live` 真实 SQLite 全链路模式 - [详细文档](docs/变更摘要/语义表驱动的商品搜索业务知识注入.md)
+
+### Changed
+- 🔧 改造 `_is_direct_product_match()` 使用品牌型号表动态扩展型号词，替代硬编码列表 - [详细文档](docs/变更摘要/语义表驱动的商品搜索业务知识注入.md)
+- 🔧 改造 `_matches_user_product_constraints()` 增加语义表 forbidden_categories 兜底过滤 - [详细文档](docs/变更摘要/语义表驱动的商品搜索业务知识注入.md)
+- 🔧 改造 `_prefer_closest_fallbacks()` 使用 fallback_relations acceptable 规则优先排序 - [详细文档](docs/变更摘要/语义表驱动的商品搜索业务知识注入.md)
+- 🔧 优化 `_build_search_plan_messages()` prompt，新增规则 5 要求 LLM 优先使用语义表值 - [详细文档](docs/变更摘要/语义表驱动的商品搜索业务知识注入.md)
+
+### Fixed
+- 🛡️ 修复 LLM SearchPlan 品类值靠猜测与库内值不一致的问题 - [详细文档](docs/变更摘要/语义表驱动的商品搜索业务知识注入.md)
+- 🛡️ 修复 iPad/MacBook 等品牌型号被普通平板/笔记本混入 direct 结果的问题 - [详细文档](docs/变更摘要/语义表驱动的商品搜索业务知识注入.md)
+- 🛡️ 修复用户口语词（"游戏本"、"防晒霜"）无法映射到检索词的问题 - [详细文档](docs/变更摘要/语义表驱动的商品搜索业务知识注入.md)
+- 🛡️ 修复 fallback 结果被 semantic_terms 检查误杀的问题 - [详细文档](docs/变更摘要/语义表驱动的商品搜索业务知识注入.md)
+
+---
+
 ## [v1.0.9] - 2026-06-08
 
 ### Added

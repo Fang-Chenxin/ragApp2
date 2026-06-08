@@ -1,0 +1,142 @@
+{
+  "防晒霜": {
+    "category": "美妆护肤",
+    "sub_category": "防晒",
+    "aliases": ["防晒乳", "防晒露", "隔离防晒", "防晒喷雾"]
+  },
+  "口红": {
+    "category": "美妆护肤",
+    "sub_category": "唇釉",
+    "aliases": ["唇膏", "唇彩", "唇部彩妆"]
+  },
+  "洁面": {
+    "category": "美妆护肤",
+    "sub_category": "洁面",
+    "aliases": ["洗面奶", "洁面乳", "洁面慕斯"]
+  },
+  "精华": {
+    "category": "美妆护肤",
+    "sub_category": "精华",
+    "aliases": ["精华液", "精华露", "肌底液"]
+  },
+  "面霜": {
+    "category": "美妆护肤",
+    "sub_category": "面霜",
+    "aliases": ["面乳", "乳液"]
+  },
+  "面膜": {
+    "category": "美妆护肤",
+    "sub_category": "面膜",
+    "aliases": ["面贴膜", "涂抹面膜"]
+  },
+  "眼霜": {
+    "category": "美妆护肤",
+    "sub_category": "眼霜",
+    "aliases": ["眼部精华"]
+  },
+  "粉底": {
+    "category": "美妆护肤",
+    "sub_category": "粉底液",
+    "aliases": ["粉底液", "粉底霜", "底妆"]
+  },
+  "卸妆": {
+    "category": "美妆护肤",
+    "sub_category": "卸妆",
+    "aliases": ["卸妆水", "卸妆油", "卸妆乳"]
+  },
+  "化妆水": {
+    "category": "美妆护肤",
+    "sub_category": "化妆水",
+    "aliases": ["爽肤水", "柔肤水", "精华水"]
+  },
+  "平板电脑": {
+    "category": "数码电子",
+    "sub_category": "平板电脑",
+    "aliases": ["平板", "pad", "iPad"]
+  },
+  "笔记本电脑": {
+    "category": "数码电子",
+    "sub_category": "笔记本电脑",
+    "aliases": ["笔记本", "笔电", "laptop"]
+  },
+  "智能手机": {
+    "category": "数码电子",
+    "sub_category": "智能手机",
+    "aliases": ["手机", "5G手机"]
+  },
+  "真无线耳机": {
+    "category": "数码电子",
+    "sub_category": "真无线耳机",
+    "aliases": ["蓝牙耳机", "耳机", "TWS耳机"]
+  },
+  "跑步鞋": {
+    "category": "服饰运动",
+    "sub_category": "跑步鞋",
+    "aliases": ["跑鞋", "慢跑鞋", "训练跑鞋"]
+  },
+  "篮球鞋": {
+    "category": "服饰运动",
+    "sub_category": "篮球鞋",
+    "aliases": ["实战篮球鞋", "篮球训练鞋"]
+  },
+  "短袖T恤": {
+    "category": "服饰运动",
+    "sub_category": "短袖T恤",
+    "aliases": ["T恤", "短袖", "速干T恤"]
+  },
+  "卫衣": {
+    "category": "服饰运动",
+    "sub_category": "卫衣",
+    "aliases": ["套头卫衣", "连帽卫衣", "运动卫衣"]
+  },
+  "瑜伽裤": {
+    "category": "服饰运动",
+    "sub_category": "瑜伽裤",
+    "aliases": ["紧身裤", "健身裤", "打底裤"]
+  },
+  "背包": {
+    "category": "服饰运动",
+    "sub_category": "背包",
+    "aliases": ["双肩包", "户外背包", "通勤背包"]
+  },
+  "咖啡": {
+    "category": "食品饮料",
+    "sub_category": "咖啡",
+    "aliases": ["速溶咖啡", "即溶咖啡", "咖啡粉"]
+  },
+  "酸奶": {
+    "category": "食品饮料",
+    "sub_category": "酸奶",
+    "aliases": ["酸牛奶", "风味酸奶", "发酵乳"]
+  },
+  "牛奶": {
+    "category": "食品饮料",
+    "sub_category": "牛奶",
+    "aliases": ["纯牛奶", "鲜牛奶", "常温奶"]
+  },
+  "坚果": {
+    "category": "食品饮料",
+    "sub_category": "坚果/零食",
+    "aliases": ["每日坚果", "混合坚果", "坚果零食"]
+  },
+  "方便面": {
+    "category": "食品饮料",
+    "sub_category": "方便食品",
+    "aliases": ["泡面", "速食面", "即食面"]
+  },
+  "茶饮": {
+    "category": "食品饮料",
+    "sub_category": "茶饮",
+    "aliases": ["茶饮料", "无糖茶", "瓶装茶"]
+  },
+  "功能饮料": {
+    "category": "食品饮料",
+    "sub_category": "功能饮料",
+    "aliases": ["能量饮料", "运动饮料"]
+  },
+  "糕点": {
+    "category": "食品饮料",
+    "sub_category": "坚果/零食",
+    "aliases": ["点心", "饼干", "面包", "肉松饼"]
+  }
+}

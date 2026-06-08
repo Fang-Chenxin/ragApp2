@@ -1,0 +1,62 @@
+{
+  "iPad": {
+    "brand": "Apple 苹果",
+    "direct_terms": ["iPad", "ipad"],
+    "fallback_terms": ["平板电脑", "平板"],
+    "strict_direct": true
+  },
+  "MacBook": {
+    "brand": "Apple 苹果",
+    "direct_terms": ["MacBook", "macbook"],
+    "fallback_terms": ["笔记本电脑", "轻薄本"],
+    "strict_direct": true
+  },
+  "iPhone": {
+    "brand": "Apple 苹果",
+    "direct_terms": ["iPhone", "iphone"],
+    "fallback_terms": ["智能手机", "手机"],
+    "strict_direct": true
+  },
+  "AirPods": {
+    "brand": "Apple 苹果",
+    "direct_terms": ["AirPods", "airpods"],
+    "fallback_terms": ["真无线耳机", "蓝牙耳机", "耳机"],
+    "strict_direct": true
+  },
+  "MacBook Air": {
+    "brand": "Apple 苹果",
+    "direct_terms": ["MacBook Air", "macbook air"],
+    "fallback_terms": ["轻薄本", "笔记本电脑"],
+    "strict_direct": true
+  },
+  "MacBook Pro": {
+    "brand": "Apple 苹果",
+    "direct_terms": ["MacBook Pro", "macbook pro"],
+    "fallback_terms": ["高性能笔记本", "笔记本电脑"],
+    "strict_direct": true
+  },
+  "MateBook": {
+    "brand": "华为",
+    "direct_terms": ["MateBook", "matebook"],
+    "fallback_terms": ["笔记本电脑", "轻薄本"],
+    "strict_direct": true
+  },
+  "MatePad": {
+    "brand": "华为",
+    "direct_terms": ["MatePad", "matepad"],
+    "fallback_terms": ["平板电脑", "平板"],
+    "strict_direct": true
+  },
+  "ThinkPad": {
+    "brand": "联想",
+    "direct_terms": ["ThinkPad", "thinkpad"],
+    "fallback_terms": ["笔记本电脑", "商务本"],
+    "strict_direct": true
+  },
+  "ThinkBook": {
+    "brand": "联想",
+    "direct_terms": ["ThinkBook", "thinkbook"],
+    "fallback_terms": ["笔记本电脑", "轻薄本"],
+    "strict_direct": true
+  }
+}

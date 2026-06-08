@@ -8,6 +8,7 @@ from typing import Any, Dict, List, Optional
 from ..product_search.engine import build_keyword_terms, strip_intent_words
 from ..product_search.query_tool import run_tool
 from ..product_search.sqlite_search import sqlite_product_search_service
+from ..product_search.search_semantics_service import search_semantics_service
 from config.logging_config import get_logger
 
 logger = get_logger("service.tool_chat")
@@ -48,6 +49,68 @@ class ToolChatProductSelectionMixin:
         }
         if not plan["direct_terms"] and plan["target_product"]:
             plan["direct_terms"] = [plan["target_product"]]
+        # 用语义表修正 LLM 输出，确保品类值和约束来自业务知识而非 LLM 猜测
+        plan = ToolChatProductSelectionMixin._apply_semantic_corrections(plan, user_query)
+        return plan
+
+    @staticmethod
+    def _apply_semantic_corrections(plan: Dict[str, Any], user_query: str) -> Dict[str, Any]:
+        """用语义表对 LLM 生成的 SearchPlan 做 deterministic 修正。"""
+        query = user_query or plan.get("target_product", "")
+
+        # 1. 品类别名修正：确保 target_category/target_sub_category 使用库内真实值
+        if not plan.get("target_category") or not plan.get("target_sub_category"):
+            resolved = search_semantics_service.resolve_category(query)
+            if resolved:
+                if not plan.get("target_category"):
+                    plan["target_category"] = resolved["category"]
+                if not plan.get("target_sub_category"):
+                    plan["target_sub_category"] = resolved["sub_category"]
+
+        # 2. 品牌型号修正：strict_direct 品牌必须包含在 direct_terms 中
+        strict_terms = search_semantics_service.get_strict_direct_terms(query)
+        if strict_terms:
+            existing = set(t.lower() for t in plan.get("direct_terms", []))
+            for t in strict_terms:
+                if t.lower() not in existing:
+                    plan.setdefault("direct_terms", []).append(t)
+
+        # 2b. 商品概念修正：把语义表的 direct_terms 注入，替代含意图词的原始 query
+        concepts = search_semantics_service.match_product_concepts(query)
+        if concepts:
+            concept_terms: list[str] = []
+            for c in concepts:
+                concept_terms.extend(c.get("direct_terms", []))
+            if concept_terms:
+                existing = set(t.lower() for t in plan.get("direct_terms", []))
+                for t in concept_terms:
+                    if t.lower() not in existing:
+                        plan.setdefault("direct_terms", []).append(t)
+
+        # 3. Fallback 关系修正：注入 forbidden_categories
+        semantic_forbidden = search_semantics_service.get_forbidden_categories(query)
+        if semantic_forbidden:
+            existing_forbidden = set(plan.get("forbidden_categories", []))
+            for cat in semantic_forbidden:
+                if cat not in existing_forbidden:
+                    plan.setdefault("forbidden_categories", []).append(cat)
+
+        # 4. 品类约束修正：从语义表补充 allowed_categories
+        if not plan.get("allowed_categories"):
+            semantic_allowed = search_semantics_service.get_effective_allowed_categories(query, None)
+            if semantic_allowed:
+                plan["allowed_categories"] = list(semantic_allowed)
+
+        # 5. 如果 allowed_categories 明确且只有一个，自动推断 forbidden_categories
+        all_categories = ["美妆护肤", "数码电子", "服饰运动", "食品饮料"]
+        allowed = plan.get("allowed_categories", [])
+        existing_forbidden = set(plan.get("forbidden_categories", []))
+        if allowed and len(allowed) == 1:
+            target_cat = allowed[0]
+            for cat in all_categories:
+                if cat != target_cat and cat not in existing_forbidden:
+                    plan.setdefault("forbidden_categories", []).append(cat)
+
         return plan
 
     @staticmethod
@@ -269,8 +332,17 @@ class ToolChatProductSelectionMixin:
         query_lower = cleaned_query.lower()
 
         specific_model_tokens = ("ipad", "iphone", "macbook", "airpods", "matebook", "thinkpad", "thinkbook")
+        # 从品牌型号表动态扩展 strict_direct 模型词
+        brand_models = search_semantics_service.match_brand_models(cleaned_query)
+        for bm in brand_models:
+            for dt in bm.get("direct_terms", []):
+                if dt.lower() not in specific_model_tokens:
+                    specific_model_tokens = (*specific_model_tokens, dt.lower())
         requested_specific_tokens = [token for token in specific_model_tokens if token in query_lower]
         if requested_specific_tokens:
+            # strict_direct 模式：必须标题/品牌含该词
+            if search_semantics_service.is_strict_direct(cleaned_query):
+                return any(token in searchable_lower for token in requested_specific_tokens)
             return any(token in searchable_lower for token in requested_specific_tokens)
 
         if search_plan:
@@ -317,6 +389,11 @@ class ToolChatProductSelectionMixin:
         sub_category = str(product.get("sub_category") or "")
         searchable = f"{title} {category} {sub_category}"
 
+        # 语义表兜底：用 fallback_relations 的 forbidden_categories 过滤
+        semantic_forbidden = search_semantics_service.get_forbidden_categories(query)
+        if semantic_forbidden and category in semantic_forbidden:
+            return False
+
         if search_plan:
             allowed_categories = [str(item).strip() for item in (search_plan.get("allowed_categories") or []) if str(item).strip()]
             forbidden_categories = [str(item).strip() for item in (search_plan.get("forbidden_categories") or []) if str(item).strip()]
@@ -328,7 +405,9 @@ class ToolChatProductSelectionMixin:
             fallback_terms = [str(term).strip().lower() for term in (search_plan.get("acceptable_fallback_terms") or []) if str(term).strip()]
             direct_terms = [str(term).strip().lower() for term in (search_plan.get("direct_terms") or []) if str(term).strip()]
             semantic_terms = fallback_terms + direct_terms
-            if semantic_terms and not any(term in searchable.lower() for term in semantic_terms):
+            # 仅当没有 allowed_categories 约束时才用 semantic_terms 过滤，
+            # 避免 fallback 结果（如唇釉、笔记本电脑）被误杀
+            if semantic_terms and not allowed_categories and not any(term in searchable.lower() for term in semantic_terms):
                 return False
 
         beauty_terms = (
@@ -390,6 +469,32 @@ class ToolChatProductSelectionMixin:
                     return preferred
 
         query = user_query or ""
+
+        # 语义表兜底：用 fallback_relations 的 acceptable 规则过滤
+        relation = search_semantics_service.get_fallback_relation(query)
+        if relation:
+            acceptable = relation.get("acceptable", [])
+            if acceptable:
+                preferred = []
+                for item in products:
+                    item_cat = str(item.get("category") or "")
+                    item_sub = str(item.get("sub_category") or "")
+                    searchable = (
+                        f"{item.get('title') or ''} {item_cat} {item_sub}"
+                    ).lower()
+                    for acc in acceptable:
+                        acc_cat = acc.get("category", "")
+                        acc_sub = acc.get("sub_category", "")
+                        acc_terms = [t.lower() for t in acc.get("terms", [])]
+                        if item_cat == acc_cat and (not acc_sub or item_sub == acc_sub):
+                            preferred.append(item)
+                            break
+                        if any(t in searchable for t in acc_terms):
+                            preferred.append(item)
+                            break
+                if preferred:
+                    return preferred
+
         preference_groups = [
             (("口红", "唇膏", "唇彩"), ("口红", "唇釉", "唇膏", "唇部", "彩妆")),
             (("游戏本",), ("笔记本", "电脑", "macbook", "matebook", "thinkpad", "thinkbook")),

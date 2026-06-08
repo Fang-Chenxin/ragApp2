@@ -230,9 +230,6 @@ class VectorStore:
             settings=Settings(anonymized_telemetry=False)
         )
 
-        if settings.external_embedding_enabled and not embedding_service.get_embedding_function():
-            embedding_service.initialize()
-
         embedding_func = embedding_service.get_embedding_function()
         # 有远程 embedding 配置时显式传给 collection；否则沿用 Chroma 默认 embedding。
         try:
