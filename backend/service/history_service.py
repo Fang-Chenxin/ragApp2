@@ -4,7 +4,7 @@ import fcntl
 import json
 import os
 import uuid
-from typing import List, Dict, Optional
+from typing import List, Dict, Optional, Any
 from datetime import datetime
 from config.settings import settings
 from config.logging_config import get_logger
@@ -267,7 +267,7 @@ class HistoryService:
                 return True
         return False
 
-    def save_message(self, user_id: str, conv_id: str, role: str, content: str, thinking: Optional[str] = None):
+    def save_message(self, user_id: str, conv_id: str, role: str, content: str, thinking: Optional[str] = None, selected_products: Optional[List[Dict[str, Any]]] = None):
         """保存单条消息
 
         Args:
@@ -276,6 +276,7 @@ class HistoryService:
             role: 消息角色 (user/assistant)
             content: 消息内容
             thinking: 思考过程内容（可选）
+            selected_products: 推荐商品清单（可选，仅 assistant 消息保存）
         """
         file_path = self._get_conv_file(user_id, conv_id)
 
@@ -296,6 +297,11 @@ class HistoryService:
                 cleaned = thinking.strip()
                 if cleaned:
                     message["thinking"] = cleaned
+            
+            # 仅 assistant 消息保存商品清单
+            if role == "assistant" and selected_products:
+                message["selected_products"] = selected_products
+            
             history.append(message)
 
             self._atomic_write_json(file_path, history)

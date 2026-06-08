@@ -2,6 +2,9 @@ package com.example.agentchat
 
 import android.content.ClipData
 import android.content.ClipboardManager
+import android.content.Intent
+import android.graphics.BitmapFactory
+import android.net.Uri
 import android.text.SpannableString
 import android.text.Spanned
 import android.text.style.ClickableSpan
@@ -10,9 +13,15 @@ import android.widget.Toast
 import android.view.LayoutInflater
 import android.view.View
 import android.view.ViewGroup
+import android.widget.ImageView
+import android.widget.LinearLayout
 import android.widget.TextView
+import android.widget.HorizontalScrollView
 import androidx.recyclerview.widget.RecyclerView
 import io.noties.markwon.Markwon
+import okhttp3.OkHttpClient
+import okhttp3.Request
+import java.util.concurrent.Executors
 
 
 private fun TextView.keepSelectable() {
@@ -24,6 +33,7 @@ private fun TextView.keepSelectable() {
 class ChatAdapter(private val messages: MutableList<ChatMessage>) : RecyclerView.Adapter<RecyclerView.ViewHolder>() {
 
     private var markwon: Markwon? = null
+    private val imageLoadExecutor = Executors.newFixedThreadPool(2)
 
     fun attachMarkwon(markwon: Markwon) {
         this.markwon = markwon
@@ -33,6 +43,14 @@ class ChatAdapter(private val messages: MutableList<ChatMessage>) : RecyclerView
         private const val VIEW_TYPE_USER = 1
         private const val VIEW_TYPE_ASSISTANT = 2
         const val PAYLOAD_STREAMING_CONTENT = "streaming_content"
+        private var okHttpClient: OkHttpClient? = null
+        
+        fun getHttpClient(): OkHttpClient {
+            if (okHttpClient == null) {
+                okHttpClient = OkHttpClient()
+            }
+            return okHttpClient!!
+        }
     }
 
     override fun getItemViewType(position: Int): Int {
@@ -66,6 +84,7 @@ class ChatAdapter(private val messages: MutableList<ChatMessage>) : RecyclerView
                 message.analysisExpanded,
                 message.processingStatus,
                 message.streaming,
+                message.selectedProducts,
             )
         }
     }
@@ -108,6 +127,8 @@ class ChatAdapter(private val messages: MutableList<ChatMessage>) : RecyclerView
         private val analysisArrowText: TextView = itemView.findViewById(R.id.analysisArrowText)
         private val analysisMessageText: TextView = itemView.findViewById(R.id.analysisMessageText)
         private val copyReplyButton: View = itemView.findViewById(R.id.copyReplyButton)
+        private val productCardsScroll: HorizontalScrollView = itemView.findViewById(R.id.productCardsScroll)
+        private val productCardsContainer: LinearLayout = itemView.findViewById(R.id.productCardsContainer)
 
         init {
             textView.keepSelectable()
@@ -121,6 +142,7 @@ class ChatAdapter(private val messages: MutableList<ChatMessage>) : RecyclerView
             analysisExpanded: Boolean,
             processingStatus: String?,
             streaming: Boolean,
+            selectedProducts: List<SelectedProduct> = emptyList(),
         ) {
             if (content.isNotBlank()) {
                 textView.visibility = View.VISIBLE
@@ -185,6 +207,8 @@ class ChatAdapter(private val messages: MutableList<ChatMessage>) : RecyclerView
             } else {
                 timingsText.visibility = View.GONE
             }
+
+            renderProductCards(selectedProducts)
         }
 
         fun bindStreamingContent(content: String) {
@@ -258,6 +282,113 @@ class ChatAdapter(private val messages: MutableList<ChatMessage>) : RecyclerView
             val clipboard = itemView.context.getSystemService(ClipboardManager::class.java)
             clipboard?.setPrimaryClip(ClipData.newPlainText(label, text))
             Toast.makeText(itemView.context, "已复制回复", Toast.LENGTH_SHORT).show()
+        }
+
+        private fun renderProductCards(products: List<SelectedProduct>) {
+            productCardsContainer.removeAllViews()
+            if (products.isEmpty()) {
+                productCardsScroll.visibility = View.GONE
+                return
+            }
+
+            val maxCards = minOf(5, products.size)
+            for (i in 0 until maxCards) {
+                val product = products[i]
+                val cardView = LayoutInflater.from(itemView.context).inflate(
+                    R.layout.item_product_card,
+                    productCardsContainer,
+                    false
+                )
+                bindProductCard(cardView, product)
+                productCardsContainer.addView(cardView)
+            }
+
+            productCardsScroll.visibility = View.VISIBLE
+        }
+
+        private fun bindProductCard(cardView: View, product: SelectedProduct) {
+            val productImage: ImageView = cardView.findViewById(R.id.productImage)
+            val imagePlaceholder: TextView = cardView.findViewById(R.id.imagePlaceholder)
+            val productTitle: TextView = cardView.findViewById(R.id.productTitle)
+            val productBrand: TextView = cardView.findViewById(R.id.productBrand)
+            val productCategory: TextView = cardView.findViewById(R.id.productCategory)
+            val productPrice: TextView = cardView.findViewById(R.id.productPrice)
+            val matchTypeTag: TextView = cardView.findViewById(R.id.matchTypeTag)
+
+            productTitle.text = product.title
+            productBrand.text = product.brand.ifEmpty { "未知品牌" }
+            productCategory.text = product.category.ifEmpty { product.subCategory }
+            productPrice.text = formatPrice(product.basePrice)
+
+            if (product.matchType.isNotEmpty()) {
+                matchTypeTag.text = product.matchType
+                matchTypeTag.visibility = View.VISIBLE
+            } else {
+                matchTypeTag.visibility = View.GONE
+            }
+
+            if (product.imageUrl.isNotEmpty()) {
+                loadProductImage(product.imageUrl, productImage, imagePlaceholder)
+            } else if (product.imagePath.isNotEmpty()) {
+                loadProductImage(product.imagePath, productImage, imagePlaceholder)
+            } else {
+                imagePlaceholder.visibility = View.VISIBLE
+                productImage.visibility = View.GONE
+            }
+
+            cardView.setOnClickListener {
+                openProductPage(product)
+            }
+        }
+
+        private fun formatPrice(basePrice: Any?): String {
+            return when (basePrice) {
+                is Number -> "¥${"%.2f".format(basePrice.toDouble())}"
+                is String -> if (basePrice.isNotEmpty()) "¥$basePrice" else "价格待定"
+                else -> "价格待定"
+            }
+        }
+
+        private fun loadProductImage(url: String, imageView: ImageView, placeholder: TextView) {
+            imageLoadExecutor.execute {
+                try {
+                    val request = Request.Builder().url(url).build()
+                    val response = getHttpClient().newCall(request).execute()
+                    if (response.isSuccessful && response.body != null) {
+                        val bitmap = BitmapFactory.decodeStream(response.body!!.byteStream())
+                        (itemView.context as? MainActivity)?.runOnUiThread {
+                            imageView.setImageBitmap(bitmap)
+                            imageView.visibility = View.VISIBLE
+                            placeholder.visibility = View.GONE
+                        }
+                    } else {
+                        showImagePlaceholder(imageView, placeholder)
+                    }
+                } catch (e: Exception) {
+                    e.printStackTrace()
+                    showImagePlaceholder(imageView, placeholder)
+                }
+            }
+        }
+
+        private fun showImagePlaceholder(imageView: ImageView, placeholder: TextView) {
+            (itemView.context as? MainActivity)?.runOnUiThread {
+                imageView.visibility = View.GONE
+                placeholder.visibility = View.VISIBLE
+            }
+        }
+
+        private fun openProductPage(product: SelectedProduct) {
+            val context = itemView.context
+            val url = when {
+                product.landingUrl.isNotEmpty() -> product.landingUrl
+                product.productId.isNotEmpty() && context is MainActivity ->
+                    context.getBackendUrlWithPath("/api/product-search/products/${product.productId}/page")
+                else -> return
+            }
+
+            val intent = Intent(Intent.ACTION_VIEW, Uri.parse(url))
+            context.startActivity(intent)
         }
 
     }

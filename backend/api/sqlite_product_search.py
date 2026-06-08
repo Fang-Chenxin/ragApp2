@@ -232,3 +232,171 @@ async def health_check():
         error_msg = str(e)
         logger.error("健康检查接口错误: %s", error_msg)
         raise HTTPException(status_code=500, detail=error_msg)
+
+
+@router.get("/products/{product_id}")
+async def get_product_detail(product_id: str):
+    """获取单个商品详情
+    
+    Args:
+        product_id: 商品ID
+    
+    Returns:
+        商品详情 JSON
+    """
+    try:
+        from service import sqlite_product_search_service
+        
+        result = sqlite_product_search_service.get_products_by_ids([product_id])
+        
+        if not result.get("ok"):
+            raise HTTPException(status_code=500, detail=result.get("error", "查询失败"))
+        
+        items = result.get("items", [])
+        if not items:
+            raise HTTPException(status_code=404, detail="商品不存在")
+        
+        return items[0]
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error("商品详情接口错误: %s", e)
+        raise HTTPException(status_code=500, detail="服务器内部错误")
+
+
+@router.get("/products/{product_id}/page")
+async def get_product_landing_page(product_id: str):
+    """获取商品落地页 HTML
+    
+    返回轻量 HTML 页面，展示标题、品牌、分类、价格、图片、营销描述
+    
+    Args:
+        product_id: 商品ID
+    
+    Returns:
+        HTML 落地页
+    """
+    try:
+        from service import sqlite_product_search_service
+        
+        result = sqlite_product_search_service.get_products_by_ids([product_id])
+        
+        if not result.get("ok"):
+            raise HTTPException(status_code=500, detail=result.get("error", "查询失败"))
+        
+        items = result.get("items", [])
+        if not items:
+            raise HTTPException(status_code=404, detail="商品不存在")
+        
+        product = items[0]
+        
+        # 生成简洁 HTML 落地页
+        title = product.get("title", "商品详情")
+        brand = product.get("brand", "")
+        category = product.get("category", "")
+        sub_category = product.get("sub_category", "")
+        price = product.get("base_price", "价格待定")
+        image_path = product.get("image_path", "")
+        marketing_desc = product.get("marketing_desc", "")
+        
+        # 构造图片 URL
+        image_url = f"/api/product-search/images/{image_path}" if image_path else ""
+        
+        html_content = f"""
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{title}</title>
+    <style>
+        body {{ font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif; margin: 0; padding: 16px; background: #f5f5f5; }}
+        .container {{ max-width: 600px; margin: 0 auto; background: white; border-radius: 8px; box-shadow: 0 2px 8px rgba(0,0,0,0.1); padding: 16px; }}
+        .product-image {{ width: 100%; height: 300px; background: #f0f0f0; border-radius: 8px; margin-bottom: 16px; display: flex; align-items: center; justify-content: center; color: #999; }}
+        .product-image img {{ width: 100%; height: 100%; object-fit: cover; border-radius: 8px; }}
+        .product-title {{ font-size: 20px; font-weight: bold; color: #222; margin-bottom: 12px; }}
+        .product-meta {{ display: flex; gap: 12px; margin-bottom: 12px; font-size: 14px; color: #666; }}
+        .meta-item {{ flex: 1; }}
+        .meta-label {{ color: #999; font-size: 12px; }}
+        .meta-value {{ color: #333; }}
+        .product-price {{ font-size: 24px; color: #e63946; font-weight: bold; margin-bottom: 12px; }}
+        .product-desc {{ background: #f9f9f9; padding: 12px; border-radius: 4px; font-size: 14px; line-height: 1.6; color: #555; }}
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="product-image">
+            {f'<img src="{image_url}" alt="{title}">' if image_url else '无图'}
+        </div>
+        <div class="product-title">{title}</div>
+        <div class="product-meta">
+            <div class="meta-item">
+                <div class="meta-label">品牌</div>
+                <div class="meta-value">{brand or '未知'}</div>
+            </div>
+            <div class="meta-item">
+                <div class="meta-label">分类</div>
+                <div class="meta-value">{category or ''}{' / ' + sub_category if sub_category else ''}</div>
+            </div>
+        </div>
+        <div class="product-price">¥{price}</div>
+        {f'<div class="product-desc">{marketing_desc}</div>' if marketing_desc else ''}
+    </div>
+</body>
+</html>
+"""
+        return {"content": html_content}
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error("商品落地页接口错误: %s", e)
+        raise HTTPException(status_code=500, detail="服务器内部错误")
+
+
+@router.get("/images/{image_path:path}")
+async def get_product_image(image_path: str):
+    """获取商品图片
+    
+    安全访问 ecommerce_agent_dataset 内的图片，禁止路径穿越
+    
+    Args:
+        image_path: 图片相对路径
+    
+    Returns:
+        图片文件
+    """
+    try:
+        import os
+        from pathlib import Path
+        from fastapi.responses import FileResponse
+        from config.settings import settings
+        
+        # 禁止路径穿越
+        if ".." in image_path or image_path.startswith("/"):
+            raise HTTPException(status_code=400, detail="非法路径")
+        
+        # 构造完整路径
+        dataset_dir = Path(settings.sqlite_product_db_path).parent
+        image_file = dataset_dir / image_path
+        
+        # 验证路径确实在数据集目录内
+        try:
+            image_file.resolve().relative_to(dataset_dir.resolve())
+        except ValueError:
+            raise HTTPException(status_code=400, detail="非法路径")
+        
+        if not image_file.exists():
+            raise HTTPException(status_code=404, detail="图片不存在")
+        
+        if not image_file.is_file():
+            raise HTTPException(status_code=400, detail="无效的文件请求")
+        
+        return FileResponse(image_file)
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error("图片访问接口错误: %s", e)
+        raise HTTPException(status_code=500, detail="服务器内部错误")

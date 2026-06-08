@@ -266,6 +266,7 @@ class ToolChatProductSelectionMixin:
             if not product_id:
                 continue
             meta = candidate_meta.get(product_id) or {}
+            image_path = str(db_item.get("image_path") or "")
             target = {
                 "rank": len(targets) + 1,
                 "product_id": product_id,
@@ -274,10 +275,12 @@ class ToolChatProductSelectionMixin:
                 "category": str(db_item.get("category") or ""),
                 "sub_category": str(db_item.get("sub_category") or ""),
                 "base_price": db_item.get("base_price"),
-                "image_path": db_item.get("image_path"),
+                "image_path": image_path,
                 "marketing_desc": str(db_item.get("marketing_desc") or "")[:500],
                 "source": str(meta.get("source") or "database"),
                 "recommendation_role": str(meta.get("recommendation_role") or ("primary" if not targets else "supporting")),
+                "image_url": f"/api/product-search/images/{image_path}" if image_path else "",
+                "landing_url": f"/api/product-search/products/{product_id}/page",
             }
             direct_match = ToolChatProductSelectionMixin._is_direct_product_match(user_query, target, search_plan)
             target["match_type"] = "direct" if direct_match else "fallback"
