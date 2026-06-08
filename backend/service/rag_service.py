@@ -1,9 +1,9 @@
 """RAG 服务层 - 封装检索增强生成逻辑"""
 import chromadb
+import httpx
 from chromadb.config import Settings
 from chromadb.types import Collection
 from typing import List, Dict, Optional, Any, AsyncGenerator
-from openai import AsyncOpenAI
 from config.settings import settings
 from config.logging_config import get_logger
 from service.llm_service import llm_service, LLMService
@@ -11,45 +11,175 @@ from service.llm_service import llm_service, LLMService
 logger = get_logger("service.rag")
 
 
+class VolcengineMultimodalEmbeddingFunction:
+    """Chroma embedding function for Volcengine Ark multimodal embeddings API."""
+
+    def __init__(
+        self,
+        api_key: str,
+        base_url: str,
+        model: str,
+        dimensions: int = 2048,
+    ):
+        self.api_key = api_key
+        self.base_url = base_url.rstrip("/")
+        self.model = model
+        self.dimensions = dimensions
+        self.endpoint = (
+            self.base_url
+            if self.base_url.endswith("/embeddings/multimodal")
+            else f"{self.base_url}/embeddings/multimodal"
+        )
+        self._client = httpx.Client(
+            timeout=httpx.Timeout(connect=30.0, read=120.0, write=30.0, pool=30.0),
+            trust_env=False,
+        )
+
+    @staticmethod
+    def name() -> str:
+        """Return a stable Chroma embedding function name."""
+        return "volcengine_multimodal"
+
+    def get_config(self) -> Dict[str, Any]:
+        """Return non-secret configuration for Chroma collection metadata."""
+        return {
+            "base_url": self.base_url,
+            "model": self.model,
+            "dimensions": self.dimensions,
+        }
+
+    @staticmethod
+    def build_from_config(config: Dict[str, Any]) -> "VolcengineMultimodalEmbeddingFunction":
+        """Rebuild the embedding function from Chroma config without persisting secrets."""
+        api_key = settings.resolved_embedding_api_key
+        if not api_key:
+            raise ValueError("外部 Embedding API Key 未配置，无法恢复 Chroma embedding function")
+        return VolcengineMultimodalEmbeddingFunction(
+            api_key=api_key,
+            base_url=str(config.get("base_url") or settings.embedding_base_url),
+            model=str(config.get("model") or settings.embedding_model),
+            dimensions=int(config.get("dimensions") or settings.embedding_dimensions),
+        )
+
+    def is_legacy(self) -> bool:
+        """Tell Chroma this embedding function supports the current config protocol."""
+        return False
+
+    def default_space(self) -> str:
+        """Use cosine distance for semantic embedding search."""
+        return "cosine"
+
+    def supported_spaces(self) -> List[str]:
+        """Return spaces supported by this embedding function."""
+        return ["cosine", "l2", "ip"]
+
+    def __call__(self, input):
+        """Return one embedding per input text."""
+        embeddings: List[List[float]] = []
+        for text in input:
+            embeddings.append(self._embed_text(str(text or " ")))
+        return embeddings
+
+    def embed_query(self, input):
+        """Embed query text for Chroma query paths."""
+        return self.__call__(input)
+
+    def _embed_text(self, text: str) -> List[float]:
+        payload: Dict[str, Any] = {
+            "model": self.model,
+            "encoding_format": "float",
+            "dimensions": self.dimensions,
+            "input": [
+                {
+                    "type": "text",
+                    "text": text,
+                }
+            ],
+        }
+        response = self._client.post(
+            self.endpoint,
+            headers={
+                "Authorization": f"Bearer {self.api_key}",
+                "Content-Type": "application/json",
+            },
+            json=payload,
+        )
+        try:
+            response.raise_for_status()
+        except httpx.HTTPStatusError as exc:
+            raise RuntimeError(
+                "火山方舟向量化 API 调用失败："
+                f"{response.status_code} {response.text}"
+            ) from exc
+        body = response.json()
+        data = body.get("data")
+        if isinstance(data, dict):
+            embedding = data.get("embedding")
+        elif isinstance(data, list) and data:
+            first = data[0]
+            embedding = first.get("embedding") if isinstance(first, dict) else None
+        else:
+            embedding = None
+
+        if not isinstance(embedding, list):
+            raise RuntimeError("火山方舟向量化 API 未返回有效 embedding")
+        return [float(value) for value in embedding]
+
+
 class EmbeddingService:
     """Embedding 服务封装类。
 
-    Chroma 可以使用默认本地 embedding，也可以在配置开启后接入豆包 embedding。
+    Chroma 可以使用默认本地 embedding，也可以在配置开启后接入 OpenAI-compatible
+    外部 embedding 服务。向量模型由后端固定配置，不向客户端提供切换选项。
     """
 
     def __init__(self):
         """初始化 embedding 客户端状态。"""
-        self.client: Optional[AsyncOpenAI] = None
+        self.client: Optional[VolcengineMultimodalEmbeddingFunction] = None
         self.embedding_function = None
         self.connected = False
+        self.provider = "local"
+        self.model = "all-MiniLM-L6-v2"
+        self.base_url = ""
+        self.error = ""
 
     def initialize(self):
         """初始化 Embedding 服务"""
-        if settings.use_doubao_embedding:
-            if not settings.api_key_configured:
-                logger.warning("⚠️  LLM API Key 未配置，无法使用豆包 Embedding，回退到本地模型")
+        self.client = None
+        self.embedding_function = None
+        self.connected = False
+        self.provider = "local"
+        self.model = "all-MiniLM-L6-v2"
+        self.base_url = ""
+        self.error = ""
+
+        if settings.external_embedding_enabled:
+            api_key = settings.resolved_embedding_api_key
+            if not api_key:
+                self.error = "外部 Embedding API Key 未配置，已回退到本地模型"
+                logger.warning("⚠️  %s", self.error)
                 return
 
-            from chromadb.utils import embedding_functions
-
-            self.embedding_function = embedding_functions.OpenAIEmbeddingFunction(
-                api_key=settings.llm_api_key,
-                api_base=settings.embedding_base_url,
-                model_name=settings.embedding_model
+            self.embedding_function = VolcengineMultimodalEmbeddingFunction(
+                api_key=api_key,
+                base_url=settings.embedding_base_url,
+                model=settings.embedding_model,
+                dimensions=settings.embedding_dimensions,
             )
+            self.client = self.embedding_function
+            self.connected = True
+            self.provider = "external"
+            self.model = settings.embedding_model
+            self.base_url = settings.embedding_base_url
 
-            masked_key = self._mask_api_key(settings.llm_api_key)
+            masked_key = self._mask_api_key(api_key)
             logger.info(
-                f"✅ 使用豆包 {settings.embedding_model} 作为向量模型\n"
+                f"✅ 使用外部 {settings.embedding_model} 作为向量模型\n"
                 f"   ├── 基础 URL: {settings.embedding_base_url}\n"
+                f"   ├── API 路径: /embeddings/multimodal\n"
+                f"   ├── 向量维度: {settings.embedding_dimensions}\n"
                 f"   └── API Key: {masked_key}"
             )
-
-            self.client = AsyncOpenAI(
-                api_key=settings.llm_api_key,
-                base_url=settings.embedding_base_url
-            )
-            self.connected = True
         else:
             # embedding_function 为 None 时，Chroma 使用自身默认 embedding 函数。
             logger.info("✅ 使用本地免费 all-MiniLM-L6-v2 Embedding 模型")
@@ -65,6 +195,22 @@ class EmbeddingService:
         """获取 Embedding 函数"""
         return self.embedding_function
 
+    def get_status(self) -> Dict[str, Any]:
+        """返回向量化服务连接状态，供健康接口和客户端展示。"""
+        return {
+            "provider": self.provider,
+            "model": self.model,
+            "base_url": self.base_url,
+            "api_path": "/embeddings/multimodal" if settings.external_embedding_enabled else "",
+            "dimensions": settings.embedding_dimensions if settings.external_embedding_enabled else None,
+            "external_enabled": settings.external_embedding_enabled,
+            "connected": self.connected if settings.external_embedding_enabled else True,
+            "status": "connected" if self.connected else ("local" if not settings.external_embedding_enabled else "fallback"),
+            "message": self.error or (
+                "外部向量化服务已连接" if self.connected else "使用本地向量化模型"
+            ),
+        }
+
 
 class VectorStore:
     """Chroma 向量数据库封装类，负责知识片段写入和相似查询。"""
@@ -76,22 +222,36 @@ class VectorStore:
 
     def initialize(self):
         """初始化向量数据库"""
+        if settings.external_embedding_enabled and not embedding_service.get_embedding_function():
+            embedding_service.initialize()
+
         self.client = chromadb.PersistentClient(
             path=settings.chroma_path,
             settings=Settings(anonymized_telemetry=False)
         )
 
+        if settings.external_embedding_enabled and not embedding_service.get_embedding_function():
+            embedding_service.initialize()
+
         embedding_func = embedding_service.get_embedding_function()
         # 有远程 embedding 配置时显式传给 collection；否则沿用 Chroma 默认 embedding。
-        if embedding_func:
-            self.collection = self.client.get_or_create_collection(
-                name=settings.chroma_collection_name,
-                embedding_function=embedding_func
-            )
-        else:
-            self.collection = self.client.get_or_create_collection(
-                name=settings.chroma_collection_name
-            )
+        try:
+            if embedding_func:
+                self.collection = self.client.get_or_create_collection(
+                    name=settings.chroma_collection_name,
+                    embedding_function=embedding_func
+                )
+            else:
+                self.collection = self.client.get_or_create_collection(
+                    name=settings.chroma_collection_name
+                )
+        except ValueError as exc:
+            if embedding_func and "Embedding function conflict" in str(exc):
+                raise RuntimeError(
+                    "Chroma 集合使用的 embedding function 与当前外部向量模型不一致。"
+                    f"请使用当前 EMBEDDING_MODEL 重新构建索引：{settings.chroma_path}"
+                ) from exc
+            raise
 
         logger.info(
             "✅ 向量数据库初始化完成\n"

@@ -63,12 +63,29 @@ cp .env.example .env
 ### 服务端模型配置
 后端可通过 `available_llm_models` 声明 Android 端可选模型，并支持用 `api_key_env` 从环境变量或 `backend/.env` 读取 API Key。客户端会通过 `/api/models` 获取模型列表。
 
+### 服务端向量化模型配置
+RAG 向量化模型由后端固定使用，不提供客户端切换。默认使用 Chroma 本地 embedding；如需接入火山方舟多模态向量化 API（`/api/v3/embeddings/multimodal`），可在 `backend/.env` 中配置：
+```bash
+USE_EXTERNAL_EMBEDDING=true
+EMBEDDING_MODEL=doubao-embedding-vision
+EMBEDDING_BASE_URL=https://ark.cn-beijing.volces.com/api/v3
+EMBEDDING_DIMENSIONS=2048
+EMBEDDING_API_KEY_ENV=ARK_API_KEY
+```
+也可以直接设置 `EMBEDDING_API_KEY`。Android 顶部会通过 `/health` 显示当前向量化模型连接状态。
+切换 embedding 模型后需要用同一配置重建 Chroma 索引：
+```bash
+cd ecommerce_agent_dataset
+python3 build_chroma_db.py --full-rebuild
+```
+
 ## Android 原生应用开发
 用 Android Studio 直接打开 `android_app/` 目录
 - 点击右上角的设置图标可动态配置后端服务器地址
 - 地址保存后无需重新编译即可生效
 - 支持 http:// 和 https:// 协议的地址
 - 聊天页“当前模型”区域可刷新服务端模型列表并一键切换
+- 聊天页会显示后端固定向量化模型的连接状态
 - 可添加、编辑、删除本机自定义 OpenAI-compatible 模型配置
 
 ## 功能特性
@@ -78,4 +95,5 @@ cp .env.example .env
 - ✅ 流式响应支持
 - ✅ 后端地址可配置化
 - ✅ 服务端模型选择
+- ✅ 外部向量化模型接入与状态显示
 - ✅ 本机自定义模型管理

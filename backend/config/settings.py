@@ -177,9 +177,32 @@ class Settings(BaseSettings):
         return None
 
     # Embedding 配置
+    # 向量化模型由后端固定使用，不暴露给 Android 端切换。
+    use_external_embedding: bool = False
+    # 兼容旧环境变量；为 true 时同样启用外部 embedding。
     use_doubao_embedding: bool = False
     embedding_model: str = "doubao-embedding-vision"
     embedding_base_url: str = "https://ark.cn-beijing.volces.com/api/v3"
+    embedding_api_key: str = ""
+    embedding_api_key_env: str = "ARK_API_KEY"
+    embedding_dimensions: int = 2048
+
+    @property
+    def external_embedding_enabled(self) -> bool:
+        """是否启用 OpenAI-compatible 外部向量化服务。"""
+        return bool(self.use_external_embedding or self.use_doubao_embedding)
+
+    @property
+    def resolved_embedding_api_key(self) -> str:
+        """解析外部 embedding 使用的 API Key，优先级：显式字段 -> env 名 -> LLM key。"""
+        if self.embedding_api_key.strip():
+            return self.embedding_api_key.strip()
+        env_key = self.embedding_api_key_env.strip()
+        if env_key:
+            key_from_env = self._get_env_value(env_key).strip()
+            if key_from_env:
+                return key_from_env
+        return self.llm_api_key.strip()
 
     # Chroma 配置
     chroma_path: str = str(PROJECT_ROOT / "ecommerce_agent_dataset" / ".chroma")

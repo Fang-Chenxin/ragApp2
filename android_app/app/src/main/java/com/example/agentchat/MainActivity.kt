@@ -107,6 +107,24 @@ data class ModelsResponse(
     @SerializedName("default_model") val defaultModel: String,
     val models: List<ModelOption> = emptyList()
 )
+data class EmbeddingServiceStatus(
+    val provider: String = "",
+    val model: String = "",
+    @SerializedName("base_url") val baseUrl: String = "",
+    @SerializedName("external_enabled") val externalEnabled: Boolean = false,
+    val connected: Boolean = false,
+    val status: String = "",
+    val message: String = ""
+)
+data class BackendHealthServices(
+    @SerializedName("vector_store") val vectorStore: Boolean = false,
+    @SerializedName("llm_client") val llmClient: Boolean = false,
+    val embedding: EmbeddingServiceStatus? = null
+)
+data class BackendHealthResponse(
+    val status: String = "",
+    val services: BackendHealthServices? = null
+)
 
 
 class MainActivity : AppCompatActivity() {
@@ -117,6 +135,7 @@ class MainActivity : AppCompatActivity() {
     private lateinit var toolbarTitleText: TextView
     private lateinit var modelSelectorContainer: LinearLayout
     private lateinit var modelSelectorText: TextView
+    private lateinit var embeddingStatusText: TextView
     
     private val client = OkHttpClient.Builder()
         .connectTimeout(30, java.util.concurrent.TimeUnit.SECONDS)
@@ -174,6 +193,7 @@ class MainActivity : AppCompatActivity() {
         toolbarTitleText = findViewById(R.id.toolbarTitleText)
         modelSelectorContainer = findViewById(R.id.modelSelectorContainer)
         modelSelectorText = findViewById(R.id.modelSelectorText)
+        embeddingStatusText = findViewById(R.id.embeddingStatusText)
         updateToolbarTitle()
         val sendButton = findViewById<Button>(R.id.sendButton)
 
@@ -181,6 +201,7 @@ class MainActivity : AppCompatActivity() {
         resetChatAdapter()
         updateModelSelectorText()
         loadModelsFromServer()
+        loadBackendHealth()
         modelSelectorContainer.setOnClickListener {
             refreshModelsAndShowSelector()
         }
@@ -280,6 +301,7 @@ class MainActivity : AppCompatActivity() {
                     }
                     ConfigManager.setBackendUrl(this, url)
                     loadModelsFromServer(showError = true)
+                    loadBackendHealth(showError = true)
                     Toast.makeText(this, "服务器地址已保存", Toast.LENGTH_SHORT).show()
                 }
             }
@@ -365,9 +387,67 @@ class MainActivity : AppCompatActivity() {
 
     private fun refreshModelsAndShowSelector() {
         modelSelectorText.text = "正在刷新模型列表..."
+        loadBackendHealth(showError = true)
         loadModelsFromServer(showError = true) {
             showModelSelectorDialog()
         }
+    }
+
+    private fun loadBackendHealth(showError: Boolean = false) {
+        if (::embeddingStatusText.isInitialized) {
+            embeddingStatusText.text = "向量模型状态：检查中..."
+        }
+        val request = Request.Builder()
+            .url(getBackendUrlWithPath("/health"))
+            .get()
+            .build()
+
+        client.newCall(request).enqueue(object : Callback {
+            override fun onFailure(call: Call, e: IOException) {
+                runOnUiThread {
+                    embeddingStatusText.text = "向量模型状态：后端不可达"
+                    if (showError) {
+                        Toast.makeText(this@MainActivity, "检查服务状态失败: ${e.message}", Toast.LENGTH_SHORT).show()
+                    }
+                }
+            }
+
+            override fun onResponse(call: Call, response: Response) {
+                response.use {
+                    if (!response.isSuccessful) {
+                        runOnUiThread {
+                            embeddingStatusText.text = "向量模型状态：检查失败 (${response.code})"
+                        }
+                        return
+                    }
+                    val responseBody = response.body?.string()
+                    try {
+                        val health = gson.fromJson(responseBody, BackendHealthResponse::class.java)
+                        runOnUiThread {
+                            updateEmbeddingStatusText(health.services?.embedding)
+                        }
+                    } catch (e: Exception) {
+                        runOnUiThread {
+                            embeddingStatusText.text = "向量模型状态：解析失败"
+                        }
+                    }
+                }
+            }
+        })
+    }
+
+    private fun updateEmbeddingStatusText(status: EmbeddingServiceStatus?) {
+        if (status == null) {
+            embeddingStatusText.text = "向量模型状态：未知"
+            return
+        }
+        val modelLabel = status.model.ifBlank { "未命名模型" }
+        val stateLabel = when {
+            status.externalEnabled && status.connected -> "外部已连接"
+            status.externalEnabled -> "外部未连接，已回退"
+            else -> "本地"
+        }
+        embeddingStatusText.text = "向量模型状态：$stateLabel · $modelLabel"
     }
 
     private fun getAllModelOptions(): List<ModelOption> {

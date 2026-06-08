@@ -13,6 +13,7 @@ Programmatic use:
 from __future__ import annotations
 
 import argparse
+import sys
 from pathlib import Path
 from typing import Any
 
@@ -32,6 +33,41 @@ from ecommerce_ingest_core import (
 )
 
 
+PROJECT_ROOT = ROOT_DIR.parent
+BACKEND_DIR = PROJECT_ROOT / "backend"
+if str(BACKEND_DIR) not in sys.path:
+    sys.path.insert(0, str(BACKEND_DIR))
+
+
+def get_configured_embedding_function():
+    """Create the same embedding function used by the backend service."""
+    try:
+        from config.settings import settings
+    except Exception:
+        return None
+
+    if not settings.external_embedding_enabled:
+        return None
+
+    api_key = settings.resolved_embedding_api_key
+    if not api_key:
+        raise SystemExit("External embedding is enabled but EMBEDDING_API_KEY is not configured.")
+
+    from service.rag_service import VolcengineMultimodalEmbeddingFunction
+
+    print(
+        "[info] using external embedding for Chroma build: "
+        f"model={settings.embedding_model} base_url={settings.embedding_base_url} "
+        f"path=/embeddings/multimodal dimensions={settings.embedding_dimensions}"
+    )
+    return VolcengineMultimodalEmbeddingFunction(
+        api_key=api_key,
+        base_url=settings.embedding_base_url,
+        model=settings.embedding_model,
+        dimensions=settings.embedding_dimensions,
+    )
+
+
 def build_chroma(records: list[ProductRecord], chroma_path: Path) -> None:
     if chromadb is None:
         print("[warn] chromadb is not installed, skip Chroma build.")
@@ -44,7 +80,14 @@ def build_chroma(records: list[ProductRecord], chroma_path: Path) -> None:
         client.delete_collection(collection_name)
     except Exception:
         pass
-    collection = client.get_or_create_collection(collection_name)
+    embedding_function = get_configured_embedding_function()
+    if embedding_function:
+        collection = client.get_or_create_collection(
+            collection_name,
+            embedding_function=embedding_function,
+        )
+    else:
+        collection = client.get_or_create_collection(collection_name)
 
     ids: list[str] = []
     documents: list[str] = []

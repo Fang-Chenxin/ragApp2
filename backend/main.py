@@ -15,7 +15,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from config.settings import settings
 from config.logging_config import setup_logging, get_logger
-from service import initialize_services, cleanup_services, llm_service, vector_store
+from service import initialize_services, cleanup_services, llm_service, vector_store, embedding_service
 from api.chat import router as chat_router
 from api.knowledge import router as knowledge_router
 from api.sqlite_product_search import router as sqlite_product_search_router
@@ -106,7 +106,8 @@ async def health_check():
         "status": "healthy",
         "services": {
             "vector_store": vector_store is not None,
-            "llm_client": llm_service.client is not None
+            "llm_client": llm_service.client is not None,
+            "embedding": embedding_service.get_status(),
         },
         "stats": {
             "total_documents": vector_store.get_count() if vector_store else 0
