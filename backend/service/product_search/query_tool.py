@@ -7,7 +7,7 @@ from .sqlite_search import sqlite_product_search_service
 
 
 def get_tool_spec() -> dict[str, Any]:
-    """获取 SQLite 商品查询工具的 OpenAI 规范"""
+    """获取 SQLite 商品查询工具的 OpenAI Function Calling 规范。"""
     return {
         "type": "function",
         "function": {
@@ -54,7 +54,7 @@ def get_tool_spec() -> dict[str, Any]:
 
 
 def run_tool(tool_name: str, arguments: Optional[Dict[str, Any]] = None) -> dict[str, Any]:
-    """执行 SQLite 商品查询工具调用"""
+    """执行 SQLite 商品查询工具调用，并返回统一 JSON 结果。"""
     if tool_name != "query_products":
         return {
             "ok": False,
@@ -72,6 +72,7 @@ def run_tool(tool_name: str, arguments: Optional[Dict[str, Any]] = None) -> dict
     show_skus = bool(args.get("show_skus", False))
 
     if text:
+        # 自然语言入口会自动解析品牌/品类/属性，最适合 LLM 直接传用户需求。
         result = sqlite_product_search_service.search_by_rule_parsed_text(text=str(text), limit=limit, show_skus=show_skus)
         if isinstance(result, dict) and result.get("ok") and result.get("total", 0) == 0:
             result["match_type"] = "direct_no_result"
@@ -80,6 +81,7 @@ def run_tool(tool_name: str, arguments: Optional[Dict[str, Any]] = None) -> dict
 
     attr_filters = _normalize_attr_filters(args.get("attr_filters"))
     if not any([args.get("keyword"), args.get("brand"), args.get("category"), args.get("sub_category"), attr_filters]):
+        # 空参数会让模型看到明确错误，从而下一轮尝试提取关键词，而不是默默返回空结果。
         return {
             "ok": False,
             "error": "参数为空！你必须提供 text（自然语言查询）或至少一个过滤器(keyword/brand/category/sub_category/attr_filters)。请从用户问题和对话历史中提取商品关键词后重新调用。",
@@ -102,7 +104,7 @@ def run_tool(tool_name: str, arguments: Optional[Dict[str, Any]] = None) -> dict
 
 
 def _normalize_attr_filters(raw_filters: Any) -> List[Dict[str, str]]:
-    """标准化属性过滤器格式"""
+    """标准化属性过滤器格式，兼容 dict 和 `[key, value]` 两种工具参数。"""
     if not raw_filters:
         return []
     resolved: List[Dict[str, str]] = []

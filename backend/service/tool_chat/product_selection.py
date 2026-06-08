@@ -21,6 +21,7 @@ class ToolChatProductSelectionMixin:
         tool_call_order: List[str],
         limit: int = 5,
     ) -> List[Dict[str, Any]]:
+        """按工具调用顺序提取商品摘要，保持 LLM 查询的优先级顺序。"""
         selected: List[Dict[str, Any]] = []
         seen_ids: set[str] = set()
 
@@ -55,6 +56,7 @@ class ToolChatProductSelectionMixin:
 
     @staticmethod
     def _extract_products_from_tool_result(result: Dict[str, Any], limit: int = 5) -> List[Dict[str, Any]]:
+        """从单次工具结果中提取去重后的商品摘要。"""
         selected: List[Dict[str, Any]] = []
         seen_ids: set[str] = set()
 
@@ -86,6 +88,7 @@ class ToolChatProductSelectionMixin:
 
     @staticmethod
     def _merge_selected_products(*groups: List[Dict[str, Any]], limit: int = 5) -> List[Dict[str, Any]]:
+        """按传入组顺序合并商品，保留首次出现的 product_id。"""
         merged: List[Dict[str, Any]] = []
         seen_ids: set[str] = set()
 
@@ -108,9 +111,15 @@ class ToolChatProductSelectionMixin:
         user_query: str = "",
         limit: int = 5,
     ) -> List[Dict[str, Any]]:
+        """生成最终可推荐商品白名单。
+
+        先合并候选，再按 product_id 回查数据库，最后应用用户显式品类约束。
+        最终回复只能围绕这里返回的商品生成。
+        """
         candidates: List[Dict[str, Any]] = []
         candidate_meta: Dict[str, Dict[str, Any]] = {}
 
+        # 工具查询通常更贴近 LLM 规划，优先级高于原始文本直查。
         for source, group in [("tool_query", tool_products), ("direct_query", direct_products)]:
             for item in group:
                 product_id = str(item.get("product_id") or "").strip()
@@ -134,6 +143,7 @@ class ToolChatProductSelectionMixin:
 
         targets: List[Dict[str, Any]] = []
         for db_item in verification.get("items") or []:
+            # 以数据库回查结果为准，避免工具结果中的截断字段或脏字段进入最终 prompt。
             product_id = str(db_item.get("product_id") or "").strip()
             if not product_id:
                 continue
@@ -200,6 +210,7 @@ class ToolChatProductSelectionMixin:
 
     @staticmethod
     def _log_target_products(user_query: str, selected_products: List[Dict[str, Any]], stage: str) -> None:
+        """记录最终候选商品，便于追踪推荐是否来自数据库白名单。"""
         if not selected_products:
             logger.info("[TargetProducts] stage=%s | query=%s | none", stage, user_query)
             return
@@ -220,10 +231,12 @@ class ToolChatProductSelectionMixin:
 
     @staticmethod
     def _build_direct_product_query_text(user_query: str) -> str:
+        """构造后台直查的自然语言查询文本，目前直接使用原始用户问题。"""
         return user_query.strip()
 
     @classmethod
     def _query_direct_selected_products(cls, user_query: str, limit: int = 5) -> List[Dict[str, Any]]:
+        """绕过 LLM 规划，直接用原始问题查商品库作为兜底候选。"""
         query_text = cls._build_direct_product_query_text(user_query)
         if not query_text:
             return []
@@ -239,6 +252,7 @@ class ToolChatProductSelectionMixin:
         user_query: str,
         selected_products: List[Dict[str, Any]],
     ) -> str:
+        """构造无需再调用 LLM 的兜底推荐文本。"""
         if not selected_products:
             return ""
 
@@ -283,6 +297,7 @@ class ToolChatProductSelectionMixin:
 
     @staticmethod
     def _build_selected_products_context(selected_products: List[Dict[str, Any]]) -> str:
+        """把目标商品清单转成最终推荐 prompt 中的内部 JSON 上下文。"""
         if not selected_products:
             return "未找到明确命中的商品候选。"
 
@@ -315,6 +330,7 @@ class ToolChatProductSelectionMixin:
         user_query: str,
         conversation_history: Optional[List[Dict[str, str]]] = None,
     ) -> List[Dict[str, str]]:
+        """构造最终推荐 LLM 消息，强约束只能推荐已校验目标商品。"""
         selected_context = ToolChatProductSelectionMixin._build_selected_products_context(selected_products)
         final_guidance = (
             "你现在进入最终导购推荐阶段。\n"

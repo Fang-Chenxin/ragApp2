@@ -9,9 +9,14 @@ logger = get_logger("service.llm")
 
 
 class LLMService:
-    """大模型服务封装类"""
+    """大模型服务封装类。
+
+    对上层隐藏 OpenAI-compatible SDK 细节，统一处理默认模型、
+    单次调用的临时模型配置、流式输出和思考字段兼容。
+    """
 
     def __init__(self):
+        """保存默认连接配置；真正的网络客户端在 `initialize()` 中创建。"""
         self.client: Optional[AsyncOpenAI] = None
         self.model = settings.llm_model
         self.base_url = settings.llm_base_url
@@ -60,6 +65,7 @@ class LLMService:
 
     @staticmethod
     def _create_http_client() -> httpx.AsyncClient:
+        """创建统一超时/连接池设置的 httpx 客户端。"""
         return httpx.AsyncClient(
             timeout=httpx.Timeout(
                 connect=30.0,
@@ -85,6 +91,7 @@ class LLMService:
             base_url != self.base_url or api_key != settings.llm_api_key
         )
 
+        # 本轮请求指定了不同 base_url/api_key 时，创建一次性客户端，避免污染全局默认客户端。
         if api_key and needs_temp_client:
             http_client = self._create_http_client()
             return (
@@ -97,6 +104,7 @@ class LLMService:
             )
 
         if not self.client:
+            # 服务未初始化但本次有可用 key 时仍允许调用，常见于客户端传入本地模型配置。
             if api_key:
                 http_client = self._create_http_client()
                 return (
@@ -113,6 +121,7 @@ class LLMService:
 
     @staticmethod
     async def _close_temp_http_client(http_client: Optional[httpx.AsyncClient]):
+        """关闭 `_resolve_client()` 为单次调用创建的临时 HTTP 客户端。"""
         if http_client:
             await http_client.aclose()
 
@@ -167,6 +176,7 @@ class LLMService:
             }
             if max_tokens:
                 kwargs["max_tokens"] = max_tokens
+            # chat.completions.create 返回完整响应；上层只需要首个 choice 的文本。
             response = await client.chat.completions.create(**kwargs)
         finally:
             await self._close_temp_http_client(temp_http_client)
@@ -204,6 +214,7 @@ class LLMService:
             "temperature": temp,
         }
         if tools:
+            # OpenAI Function Calling 参数只在调用方传入工具时附加，避免普通模型调用误触发工具协议。
             kwargs["tools"] = tools
             kwargs["tool_choice"] = tool_choice
 
@@ -242,6 +253,7 @@ class LLMService:
             )
 
             async for chunk in stream:
+                # OpenAI 流式增量可能包含空 delta，例如 role 或结束事件。
                 if chunk.choices[0].delta.content is not None:
                     yield chunk.choices[0].delta.content
         finally:
@@ -305,7 +317,7 @@ class LLMService:
                 if thinking_content:
                     yield {"thinking": thinking_content}
                 
-                # 提取内容
+                # 提取普通回复内容；思考和正文分开 yield，供 SSE 层分别展示/保存。
                 if delta.content:
                     yield {"content": delta.content}
         finally:

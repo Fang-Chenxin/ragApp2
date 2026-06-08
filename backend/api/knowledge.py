@@ -9,7 +9,7 @@ router = APIRouter(prefix="/api", tags=["knowledge"])
 
 
 class AddKnowledgeRequest(BaseModel):
-    """添加知识请求模型"""
+    """添加知识请求模型；metadata 会原样写入 Chroma，供 RAG 来源展示使用。"""
     content: str
     metadata: Optional[Dict[str, Any]] = None
 
@@ -49,7 +49,7 @@ async def add_knowledge(request: AddKnowledgeRequest):
                 detail="向量数据库未初始化"
             )
 
-        # 添加文档
+        # 文档 ID 未传入时由 VectorStore 按当前数量生成。
         doc_id = vector_store.add_document(
             content=request.content,
             metadata=request.metadata
@@ -87,6 +87,7 @@ async def get_knowledge_stats():
                 detail="向量数据库未初始化"
             )
 
+        # 只返回轻量统计，避免读取或展开全部知识片段。
         return KnowledgeStatsResponse(
             total_documents=vector_store.get_count(),
             collection_name=settings.chroma_collection_name

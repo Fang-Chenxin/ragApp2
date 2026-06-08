@@ -41,6 +41,7 @@ _REVERSE_INDEX_CACHE: dict[int, tuple[dict[str, list[str]], int, dict[str, str]]
 
 @functools.lru_cache(maxsize=8)
 def load_ontology(ontology_path: Path) -> dict[str, Any]:
+    """读取商品属性 ontology，并补齐缺省顶层字段。"""
     if not ontology_path.exists():
         return {"brands": {}, "families": {}, "category_scopes": {}, "category_aliases": {}}
     data = json.loads(ontology_path.read_text(encoding="utf-8"))
@@ -53,10 +54,12 @@ def load_ontology(ontology_path: Path) -> dict[str, Any]:
 
 
 def normalize(s: str) -> str:
+    """把任意字符串压缩空白并去掉首尾空白。"""
     return " ".join(str(s).strip().split())
 
 
 def build_reverse_index(mapping: dict[str, list[str]]) -> dict[str, str]:
+    """把 `标准值 -> 同义词列表` 转成 `任意同义词 -> 标准值`。"""
     cache_key = id(mapping)
     cached = _REVERSE_INDEX_CACHE.get(cache_key)
     if cached and cached[0] is mapping and cached[1] == len(mapping):
@@ -74,6 +77,7 @@ def build_reverse_index(mapping: dict[str, list[str]]) -> dict[str, str]:
 
 
 def expand_term(term: str, mapping: dict[str, list[str]]) -> list[str]:
+    """根据同义词表扩展一个品牌/属性词，并保持标准值优先。"""
     term_norm = normalize(term)
     reverse = build_reverse_index(mapping)
     canonical = reverse.get(term_norm.lower(), term_norm)
@@ -95,6 +99,7 @@ def expand_term(term: str, mapping: dict[str, list[str]]) -> list[str]:
 
 
 def unique_preserve_order(items: list[str]) -> list[str]:
+    """按首次出现顺序去重，同时过滤空字符串。"""
     seen: set[str] = set()
     ordered: list[str] = []
     for item in items:
@@ -110,6 +115,7 @@ def unique_preserve_order(items: list[str]) -> list[str]:
 
 
 def build_family_indexes(ontology: dict[str, Any]) -> tuple[dict[str, str], dict[str, dict[str, Any]]]:
+    """建立属性族 key 别名索引，并规范化属性族定义。"""
     families = ontology.get("families", {}) or {}
     alias_index: dict[str, str] = {}
     normalized_families: dict[str, dict[str, Any]] = {}
@@ -126,14 +132,17 @@ def build_family_indexes(ontology: dict[str, Any]) -> tuple[dict[str, str], dict
 
 
 def resolve_family(key: str, alias_index: dict[str, str]) -> str | None:
+    """把原始属性键解析到 ontology 中的属性族名。"""
     return alias_index.get(normalize(key).lower())
 
 
 def normalize_text_variants(value: str) -> list[str]:
+    """为普通文本值生成大小写变体。"""
     return unique_preserve_order([value, value.lower(), value.upper()])
 
 
 def parse_numeric_unit(value: str) -> tuple[float | None, str | None]:
+    """解析带单位的数值文本，如 `1TB`、`500ml`、`42码`。"""
     text = normalize(value).lower().replace(" ", "")
 
     match = re.match(r"^(\d+(?:\.\d+)?)(tb|gb|g|t|ml|l|mm|cm|m|英寸|寸|inch|in|kg|g|盒|瓶|袋|片|支|个|只|枚|件)?(?:s?sd)?$", text)
@@ -145,6 +154,7 @@ def parse_numeric_unit(value: str) -> tuple[float | None, str | None]:
 
 
 def expand_color_variants(value: str, ontology: dict[str, Any]) -> list[str]:
+    """按颜色 ontology 扩展颜色同义词，如银灰/银色/灰色。"""
     normalized = normalize(value)
     lower = normalized.lower()
     color_family = ontology.get("families", {}).get("color", {})
@@ -157,6 +167,7 @@ def expand_color_variants(value: str, ontology: dict[str, Any]) -> list[str]:
 
 
 def expand_numeric_family_variants(value: str, family: str) -> list[str]:
+    """按属性族扩展数值单位变体，例如 1TB -> 1024GB/1TB SSD。"""
     number, unit = parse_numeric_unit(value)
     if number is None:
         return unique_preserve_order([normalize(value)])
@@ -212,6 +223,7 @@ def expand_numeric_family_variants(value: str, family: str) -> list[str]:
 
 
 def expand_family_value_variants(family: str | None, value: str, ontology: dict[str, Any]) -> list[str]:
+    """根据属性族类型扩展属性值候选。"""
     if family is None:
         return unique_preserve_order([normalize(value)])
     family_spec = ontology.get("families", {}).get(family, {})
@@ -228,6 +240,7 @@ def expand_family_value_variants(family: str | None, value: str, ontology: dict[
 
 
 def allowed_families_for_category(category: str | None, ontology: dict[str, Any]) -> set[str] | None:
+    """返回某个品类允许使用的属性族集合；无品类时不过滤。"""
     if not category:
         return None
     scopes = ontology.get("category_scopes", {}) or {}
@@ -238,6 +251,7 @@ def allowed_families_for_category(category: str | None, ontology: dict[str, Any]
 
 
 def build_keyword_terms(text: str) -> list[str]:
+    """构造 FTS/LIKE 关键词列表，中文长词会额外拆成二字片段。"""
     cleaned = normalize(text)
     if not cleaned:
         return []
@@ -261,6 +275,7 @@ def build_keyword_terms(text: str) -> list[str]:
 
 
 def build_category_reverse_index(ontology: dict[str, Any]) -> dict[str, str]:
+    """建立品类及其别名到标准品类名的反向索引。"""
     reverse: dict[str, str] = {}
     category_aliases = ontology.get("category_aliases", {}) or {}
     for canonical, aliases in category_aliases.items():
@@ -273,6 +288,7 @@ def build_category_reverse_index(ontology: dict[str, Any]) -> dict[str, str]:
 
 
 def detect_category_from_text(text: str, ontology: dict[str, Any]) -> str | None:
+    """从自然语言文本中识别最具体的商品品类。"""
     reverse = build_category_reverse_index(ontology)
     text_norm = normalize(text).lower()
     candidates: list[tuple[int, str]] = []
@@ -286,6 +302,7 @@ def detect_category_from_text(text: str, ontology: dict[str, Any]) -> str | None
 
 
 def detect_brand_from_text(text: str, ontology: dict[str, Any]) -> str | None:
+    """从自然语言文本中识别品牌标准名。"""
     brands = ontology.get("brands", {}) or {}
     reverse = build_reverse_index(brands)
     text_norm = normalize(text).lower()
@@ -300,6 +317,7 @@ def detect_brand_from_text(text: str, ontology: dict[str, Any]) -> str | None:
 
 
 def detect_family_value_from_text(family: str, text: str, ontology: dict[str, Any]) -> str | None:
+    """从自然语言文本中识别某个属性族的值。"""
     family_spec = ontology.get("families", {}).get(family, {}) or {}
     value_mode = family_spec.get("value_mode", "text")
     text_norm = normalize(text)
@@ -337,6 +355,7 @@ def detect_family_value_from_text(family: str, text: str, ontology: dict[str, An
 
 
 def extract_query_from_text(text: str, ontology: dict[str, Any]) -> dict[str, Any]:
+    """把自然语言查询解析成结构化过滤器。"""
     category = detect_category_from_text(text, ontology)
     brand = detect_brand_from_text(text, ontology)
     category_scopes = ontology.get("category_scopes", {}) or {}
@@ -353,7 +372,7 @@ def extract_query_from_text(text: str, ontology: dict[str, Any]) -> dict[str, An
         key = family_spec.get("keys", [family_name])[0]
         attr_filters.append({"key": key, "value": value})
 
-    # Fallback keyword: remove recognized brand/category/family tokens and keep the rest.
+    # Fallback keyword: 移除已识别出的品牌/品类/属性词，剩余文本作为全文检索关键词。
     keyword = normalize(text)
     for token in [category or "", brand or ""]:
         if token:
@@ -377,6 +396,7 @@ def extract_query_from_text(text: str, ontology: dict[str, Any]) -> dict[str, An
 
 
 def parse_attr_filters(raw_filters: list[str]) -> list[tuple[str, str]]:
+    """解析 CLI `--attr key:value` 参数。"""
     pairs: list[tuple[str, str]] = []
     for raw in raw_filters:
         if ":" not in raw:
@@ -400,6 +420,7 @@ def build_query(
     limit: int,
     keyword_mode: str = "fts",
 ) -> tuple[str, list[Any]]:
+    """根据结构化过滤器生成商品查询 SQL 和参数。"""
     sql = [
         "SELECT p.product_id, p.title, p.brand, p.brand_norm, p.category, p.sub_category, p.base_price",
         "FROM products p",
@@ -409,6 +430,7 @@ def build_query(
     allowed_families = allowed_families_for_category(category, ontology)
 
     if keyword:
+        # 关键词优先使用 FTS；上层在无结果时会用 LIKE 再查一次。
         keyword_terms = build_keyword_terms(keyword)
         if keyword_mode == "like":
             like_clauses = []
@@ -452,6 +474,7 @@ def build_query(
     if attr_filters:
         sku_level_clauses: list[str] = []
         for key, value in attr_filters:
+            # 属性过滤落在 SKU 级别，同一商品只要存在满足所有属性的 SKU 即命中。
             family = resolve_family(key, family_alias_index)
             if allowed_families is not None and family is not None and family not in allowed_families:
                 # Skip families outside the category scope rather than mixing them in.
@@ -500,6 +523,7 @@ def build_query(
 
 
 def fetch_skus(conn: sqlite3.Connection, product_id: str) -> list[dict[str, Any]]:
+    """读取某个商品的 SKU 价格和属性明细。"""
     sku_rows = conn.execute(
         "SELECT sku_id, price FROM skus WHERE product_id = ? ORDER BY sku_id", (product_id,)
     ).fetchall()
@@ -556,6 +580,7 @@ def agent_search_products(
     resolved_attr_filters: list[tuple[str, str]] = []
     input_attr_filters = attr_filters or []
 
+    # 统一兼容 tuple 和 dict 两种属性过滤器格式。
     for item in input_attr_filters:
         if isinstance(item, tuple) and len(item) == 2:
             key, value = normalize(item[0]), normalize(item[1])
@@ -611,6 +636,7 @@ def agent_search_products(
         try:
             rows = conn.execute(sql, params).fetchall()
             if not rows and keyword:
+                # FTS 对分词敏感，空结果时用 LIKE 做一次宽松回退。
                 fallback_sql, fallback_params = build_query(
                     keyword=normalize(keyword),
                     brand=normalize(brand) if brand else None,
@@ -699,6 +725,7 @@ def agent_search_by_rule_parsed_text(
         }
 
     ontology = load_ontology(ontology_path_obj)
+    # 先用规则和 ontology 抽取结构化字段，再复用结构化查询入口。
     parsed = extract_query_from_text(text, ontology)
     result = agent_search_products(
         db_path=db_path_obj,
@@ -718,6 +745,7 @@ def agent_search_by_rule_parsed_text(
 
 
 def main() -> None:
+    """命令行调试入口，便于直接验证 SQLite 搜索和 ontology 解析。"""
     parser = argparse.ArgumentParser(description="Query SQLite with synonym mapping without schema changes.")
     parser.add_argument("--db-path", type=Path, default=DEFAULT_DB_PATH)
     parser.add_argument("--ontology-path", type=Path, default=DEFAULT_ONTOLOGY_PATH)

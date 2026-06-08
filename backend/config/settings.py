@@ -9,7 +9,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
 
 class Settings(BaseSettings):
-    """应用配置类，使用 Pydantic Settings 管理环境变量"""
+    """应用配置类，集中声明后端所有可通过环境变量覆盖的参数。"""
 
     # LLM 配置 - 统一使用 LLM_API_KEY 命名，兼容多种模型
     llm_api_key: str = ""  # 空字符串表示未配置，避免明文默认值
@@ -29,6 +29,7 @@ class Settings(BaseSettings):
 
     @staticmethod
     def _strip_env_value(value: str) -> str:
+        """去掉 `.env` 值两端空白和成对引号，便于手写配置。"""
         value = value.strip()
         if len(value) >= 2 and value[0] == value[-1] and value[0] in {"'", '"'}:
             return value[1:-1]
@@ -36,6 +37,11 @@ class Settings(BaseSettings):
 
     @classmethod
     def _read_dotenv_value(cls, key: str) -> str:
+        """从 `backend/.env` 直接读取指定 key。
+
+        Pydantic 会读取 Settings 字段；这里额外支持 `api_key_env`
+        指向的任意变量名，用于模型列表中按环境变量名引用密钥。
+        """
         env_file = cls.Config.env_file
         if not env_file or not os.path.exists(env_file):
             return ""
@@ -61,6 +67,7 @@ class Settings(BaseSettings):
         return os.getenv(key, "") or cls._read_dotenv_value(key)
 
     def _resolve_api_key(self, item: dict[str, Any]) -> str:
+        """解析单个模型配置使用的 API Key。"""
         api_key_env = str(item.get("api_key_env") or "").strip()
         if api_key_env:
             return self._get_env_value(api_key_env).strip()
@@ -76,6 +83,7 @@ class Settings(BaseSettings):
         has_configured_model_list = bool(self.available_llm_models)
 
         for item in self.available_llm_models:
+            # 兼容旧配置：过去可直接写字符串模型 ID。
             if isinstance(item, str):
                 model_id = item.strip()
                 option = {
@@ -86,6 +94,7 @@ class Settings(BaseSettings):
                     "api_key": self.llm_api_key,
                 }
             elif isinstance(item, dict):
+                # 新配置：每个模型可以带独立 base_url 和 api_key_env。
                 model_id = str(item.get("id") or "").strip()
                 option = {
                     "id": model_id,
@@ -122,6 +131,7 @@ class Settings(BaseSettings):
         for item in self.available_llm_models:
             if not isinstance(item, dict):
                 continue
+            # 没有显式要求发现模型时，该条仅作为固定模型配置使用。
             should_discover = bool(item.get("discover_models") or item.get("include_models"))
             if not should_discover:
                 continue
@@ -134,6 +144,7 @@ class Settings(BaseSettings):
             allow_models = item.get("allow_models") or item.get("include_model_ids") or []
             ark_endpoint_only = item.get("ark_endpoint_only")
             if ark_endpoint_only is None:
+                # 火山方舟标准 /models 可能返回大量标准模型；导购项目默认只保留 ep- 接入点。
                 ark_endpoint_only = "volces.com" in base_url and not bool(allow_models)
 
             sources.append({
@@ -204,7 +215,7 @@ class Settings(BaseSettings):
 
     @property
     def api_key_configured(self) -> bool:
-        """检查 API Key 是否已配置"""
+        """检查全局默认 LLM API Key 是否已配置。"""
         return bool(self.llm_api_key and self.llm_api_key.strip())
 
     class Config:

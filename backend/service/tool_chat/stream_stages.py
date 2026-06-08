@@ -19,6 +19,7 @@ class ToolChatStreamStagesMixin:
         self,
         ctx: _StreamPipelineContext,
     ) -> tuple[List[Dict[str, Any]], float, Optional[str]]:
+        """用原始用户问题直接查一次商品库，给最终目标商品提供兜底候选。"""
         direct_start = time.perf_counter()
         try:
             products = await asyncio.to_thread(self._query_direct_selected_products, ctx.user_query)
@@ -29,6 +30,7 @@ class ToolChatStreamStagesMixin:
             return [], round(time.perf_counter() - direct_start, 3), error
 
     async def _stream_run_need_analysis(self, ctx: _StreamPipelineContext) -> tuple[str, float]:
+        """流式生成需求分析，并把增量片段写入上下文队列供其他阶段穿插输出。"""
         analysis_text = ""
         analysis_start = time.perf_counter()
         first_delta_logged = False
@@ -47,6 +49,7 @@ class ToolChatStreamStagesMixin:
                     analysis_text += chunk
                     await ctx.analysis_queue.put({"type": "analysis_delta", "content": chunk})
         except Exception as exc:
+            # 需求分析只影响展示和最终 prompt，不应阻塞导购主流程。
             analysis_text = self._build_need_analysis_summary(ctx.user_query, ctx.conversation_history)
             await ctx.analysis_queue.put({"type": "analysis_delta", "content": analysis_text})
             logger.warning("      需求分析生成失败，已切换为简化分析: %s", type(exc).__name__)
@@ -64,6 +67,7 @@ class ToolChatStreamStagesMixin:
         ctx: _StreamPipelineContext,
         event: Dict[str, Any],
     ) -> Optional[Dict[str, Any]]:
+        """把内部分析队列事件转换成 API 层可直接转发的 `analysis` payload。"""
         event_type = event.get("type")
         if event_type == "analysis_delta":
             content = str(event.get("content") or "")
@@ -94,6 +98,7 @@ class ToolChatStreamStagesMixin:
         *,
         wait_until_done: bool = False,
     ) -> AsyncGenerator[Dict[str, Any], None]:
+        """排空分析队列；需要时等待分析任务完成后再返回。"""
         while wait_until_done and not ctx.analysis_done:
             event = await ctx.analysis_queue.get()
             payload = self._stream_emit_analysis_event(ctx, event)
@@ -109,6 +114,7 @@ class ToolChatStreamStagesMixin:
         self,
         ctx: _StreamPipelineContext,
     ) -> tuple[Any, Optional[Exception], float, float]:
+        """执行首轮工具规划调用，供并行流程提前启动。"""
         call_start = time.perf_counter()
         try:
             response = await self.llm.chat_with_tools(
@@ -130,9 +136,11 @@ class ToolChatStreamStagesMixin:
         self,
         ctx: _StreamPipelineContext,
     ) -> AsyncGenerator[Dict[str, Any], None]:
+        """启动可并行的后台分支，并向前端发送初始状态。"""
         ctx.parallel_branch_start = time.perf_counter()
         ctx.analysis_task = ctx.task_group.create(self._stream_run_need_analysis(ctx))
         if settings.tool_chat_parallel_enabled:
+            # 三个分支互不依赖：需求分析用于展示，直查用于兜底，首轮 LLM 用于规划工具。
             ctx.direct_selected_products_task = ctx.task_group.create(self._stream_query_direct_selected_products(ctx))
             ctx.first_tool_planning_task = ctx.task_group.create(self._stream_first_tool_planning_call(ctx))
 
@@ -143,9 +151,11 @@ class ToolChatStreamStagesMixin:
         self,
         ctx: _StreamPipelineContext,
     ) -> AsyncGenerator[Dict[str, Any], None]:
+        """执行向量检索和可选 LLM rerank，同时穿插输出需求分析增量。"""
         t0 = time.perf_counter()
         vector_task = ctx.task_group.create(self._query_context_docs_with_timeout(ctx.user_query))
         while not vector_task.done():
+            # 检索期间不要让前端空等，优先输出已经生成的需求分析片段。
             try:
                 event = await asyncio.wait_for(ctx.analysis_queue.get(), timeout=0.2)
                 payload = self._stream_emit_analysis_event(ctx, event)
@@ -220,6 +230,7 @@ class ToolChatStreamStagesMixin:
         ctx.context_text = self._format_context_docs(ctx.context_docs)
         ctx.rag_sources = self._extract_rag_sources(ctx.context_docs)
         if ctx.rag_sources:
+            # rag_sources 给前端展示“知识来源商品”，不同于最终推荐目标商品。
             yield {
                 "type": "rag_sources",
                 "content": "已定位知识来源商品",
@@ -231,6 +242,7 @@ class ToolChatStreamStagesMixin:
         self,
         ctx: _StreamPipelineContext,
     ) -> AsyncGenerator[Dict[str, Any], None]:
+        """等待需求分析结束，并构造最终回复阶段使用的 system prompt。"""
         async for payload in self._stream_drain_analysis_queue(ctx, wait_until_done=True):
             yield payload
         if ctx.analysis_task is not None:
@@ -246,6 +258,7 @@ class ToolChatStreamStagesMixin:
         self,
         ctx: _StreamPipelineContext,
     ) -> AsyncGenerator[Dict[str, Any], None]:
+        """收集原始需求直查结果并输出 debug 事件。"""
         if ctx.direct_selected_products_task is not None:
             ctx.direct_selected_products, ctx.direct_query_elapsed, ctx.direct_query_error = await ctx.direct_selected_products_task
         else:
@@ -261,4 +274,3 @@ class ToolChatStreamStagesMixin:
         )
         self._log_trace_chunk(trace_chunk)
         yield trace_chunk
-

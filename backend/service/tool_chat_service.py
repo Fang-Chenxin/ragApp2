@@ -26,14 +26,20 @@ class ToolChatService(
     ToolChatRagMixin,
     ToolChatStreamMixin,
 ):
-    """工具调用聊天服务封装类"""
+    """导购工具聊天服务。
+
+    通过 mixin 组合导购所需能力：trace、商品选择、prompt、RAG、流式编排。
+    API 层只调用本类的 `chat_with_tools_stream()` 或兼容保留的 `chat_with_tools()`。
+    """
 
     def __init__(self, vector_store: VectorStore, llm: LLMService):
+        """注入向量库和 LLM 服务，商品工具通过 product_search 模块全局服务执行。"""
         self.vector_store = vector_store
         self.llm = llm
 
     @staticmethod
     def _parse_tool_arguments(arguments_text: str) -> Dict[str, Any]:
+        """解析 LLM 返回的工具参数 JSON；解析失败时返回空 dict 触发后续参数校验。"""
         try:
             return json.loads(arguments_text or "{}")
         except json.JSONDecodeError:
@@ -45,6 +51,7 @@ class ToolChatService(
         tool_name: str,
         arguments: Dict[str, Any],
     ) -> Dict[str, Any]:
+        """在线程池中执行同步商品工具，并把结果包装成统一追踪结构。"""
         tool_start = time.perf_counter()
         try:
             result = await asyncio.to_thread(run_tool, tool_name, arguments)
@@ -98,6 +105,7 @@ class ToolChatService(
         logger.debug("  使用模型: %s", model or (model_config or {}).get("id") or getattr(self.llm, "model", "default"))
 
 
+        # 默认 LLM 未连接时，如果本轮没有客户端/发现模型传入的 api_key，就只能返回配置错误。
         if not self.llm.connected and not (model_config or {}).get("api_key"):
             logger.warning("  LLM 服务未连接")
             return {
@@ -106,6 +114,7 @@ class ToolChatService(
             }
 
         t0 = time.perf_counter()
+        # 非流式路径按顺序执行 RAG 检索和 rerank；流式路径会把部分阶段并行化。
         context_docs, vector_error = await self._query_context_docs_with_timeout(user_query)
         context_text = self._format_context_docs(context_docs)
         rag_sources = self._extract_rag_sources(context_docs)
@@ -164,6 +173,7 @@ class ToolChatService(
         consecutive_empty_params = 0
 
         for round_idx in range(max_tool_calls):
+            # 每一轮都让 LLM 基于已有工具结果决定是否继续查库或直接回答。
             logger.debug("  ── LLM 第 %s 轮调用 ──", round_idx + 1)
             logger.debug("      发送消息数: %s", len(messages))
             t1 = time.perf_counter()
@@ -255,6 +265,7 @@ class ToolChatService(
                 if not has_valid_param:
                     round_has_empty = True
 
+                # `run_tool` 是同步 SQLite 查询，放到线程中避免阻塞事件循环。
                 tool_start = time.perf_counter()
                 result = await asyncio.to_thread(run_tool, tool_name, arguments)
                 tool_elapsed = round(time.perf_counter() - tool_start, 3)
@@ -274,6 +285,7 @@ class ToolChatService(
             tool_rounds += 1
 
             if round_has_empty:
+                # 连续空参数通常代表 prompt/模型陷入循环，提前退出再做最终回复更稳。
                 consecutive_empty_params += 1
                 logger.warning("      检测到空参数调用 (连续 %s 次)", consecutive_empty_params)
                 if consecutive_empty_params >= 2:
@@ -288,6 +300,7 @@ class ToolChatService(
         try:
             final_messages = [dict(message) for message in messages]
             if final_messages and final_messages[0].get("role") == "system":
+                # 工具规划 prompt 偏“如何查库”，最终回复前替换成面向用户推荐的系统 prompt。
                 final_messages[0]["content"] = final_system_prompt
             final_response = await self.llm.chat_with_tools(
                 messages=final_messages,

@@ -31,6 +31,7 @@ class _ConsoleProcessingNoiseFilter(logging.Filter):
     )
 
     def filter(self, record: logging.LogRecord) -> bool:
+        """控制台过滤高频处理日志，错误日志始终放行。"""
         if record.name.startswith(self._QUIET_LOGGERS) and record.levelno < logging.ERROR:
             return False
         return True

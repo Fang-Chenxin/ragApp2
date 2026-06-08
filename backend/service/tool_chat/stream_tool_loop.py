@@ -20,16 +20,19 @@ class ToolChatStreamToolLoopMixin:
         self,
         ctx: _StreamPipelineContext,
     ) -> AsyncGenerator[Dict[str, Any], None]:
+        """运行多轮“LLM 规划 -> SQLite 工具执行 -> 工具结果回填”的循环。"""
         for round_idx in range(ctx.max_tool_calls):
             logger.debug("  ── LLM 第 %s 轮调用 ──", round_idx + 1)
             logger.debug("      发送消息数: %s", len(ctx.messages))
 
             if round_idx == 0:
+                # 首轮可能已经在 bootstrap 阶段并行开始，这里只需要等待结果。
                 if ctx.first_tool_planning_task is not None:
                     response, call_error, elapsed, duration = await ctx.first_tool_planning_task
                 else:
                     response, call_error, elapsed, duration = await self._stream_first_tool_planning_call(ctx)
                 if settings.tool_chat_parallel_enabled:
+                    # 粗略估算并行节省时间，便于观察并行流程是否真的有收益。
                     parallel_wall = max(time.perf_counter() - ctx.parallel_branch_start, 0)
                     parallel_branch_sum = ctx.analysis_elapsed + ctx.direct_query_elapsed + duration
                     ctx.timings["parallel_overlap_saved_estimate"] = round(max(parallel_branch_sum - parallel_wall, 0), 3)
@@ -50,6 +53,7 @@ class ToolChatStreamToolLoopMixin:
                     return
                 ctx.llm_call_total += duration
             else:
+                # 第二轮以后必须等待上一轮工具结果进入 messages 后再让 LLM 继续规划。
                 t1 = time.perf_counter()
                 try:
                     response = await self.llm.chat_with_tools(
@@ -102,6 +106,7 @@ class ToolChatStreamToolLoopMixin:
 
             assistant_payload: Dict[str, Any] = {"role": "assistant", "content": assistant_message.content}
             if assistant_message.tool_calls:
+                # 将 SDK 对象转成普通 dict，后续可安全 append 到 OpenAI messages。
                 assistant_payload["tool_calls"] = [
                     {
                         "id": tc.id,
@@ -132,6 +137,7 @@ class ToolChatStreamToolLoopMixin:
                 yield trace_chunk
 
             if not assistant_message.tool_calls:
+                # LLM 认为无需继续查库时，进入“直接回复整理”阶段。
                 async for payload in self._stream_stage_direct_reply_finalization(ctx, assistant_message):
                     yield payload
                 return
@@ -164,9 +170,11 @@ class ToolChatStreamToolLoopMixin:
                     "querying_products",
                     extra={"tool_call_id": tc.id, "tool_name": tool_name},
                 )
+                # 同一轮多个工具调用并发执行，减少 SQLite 查询等待时间。
                 tool_tasks.append(ctx.task_group.create(self._run_tool_worker(tc.id, tool_name, arguments)))
 
             for task in asyncio.as_completed(tool_tasks):
+                # 先把完成的工具结果作为 debug/status 事件发给前端；消息回填稍后按原调用顺序进行。
                 outcome = await task
                 ctx.tool_results[outcome["tool_call_id"]] = outcome
                 result = outcome["result"]
@@ -229,6 +237,7 @@ class ToolChatStreamToolLoopMixin:
                     )
 
             for tool_call_id in round_tool_call_order:
+                # OpenAI 工具协议要求 assistant tool_calls 后按 tool_call_id 回填 tool 消息。
                 result = ctx.tool_results.get(tool_call_id, {}).get("result", {})
                 ctx.messages.append(
                     {
@@ -241,6 +250,7 @@ class ToolChatStreamToolLoopMixin:
             ctx.tool_rounds += 1
 
             if round_has_empty:
+                # 连续空参数代表模型没有从历史中抽出有效查询词，继续循环通常只会浪费时间。
                 ctx.consecutive_empty_params += 1
                 logger.warning("      检测到空参数调用 (连续 %s 次)", ctx.consecutive_empty_params)
                 if ctx.consecutive_empty_params >= 2:
@@ -256,6 +266,7 @@ class ToolChatStreamToolLoopMixin:
                 ctx.user_query,
             )
             if len(round_selected_products) >= 3:
+                # 已有足够可核验商品时提前停止工具循环，避免模型继续泛化查询。
                 logger.debug("      已获得 %s 个目标商品，提前进入最终推荐生成", len(round_selected_products))
                 yield self._status_chunk(
                     "已找到足够候选，正在整理推荐",
@@ -263,4 +274,3 @@ class ToolChatStreamToolLoopMixin:
                     extra={"selected_product_count": len(round_selected_products)},
                 )
                 break
-

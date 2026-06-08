@@ -7,17 +7,20 @@ from typing import Any, Dict, List, Optional
 
 
 class _StreamTaskGroup:
-    """Track background tasks created while a streaming response is active."""
+    """记录一次流式请求期间创建的后台任务，便于请求结束时统一取消。"""
 
     def __init__(self):
+        """初始化任务列表。"""
         self._tasks: list[asyncio.Task[Any]] = []
 
     def create(self, coro) -> asyncio.Task[Any]:
+        """创建后台任务并登记，返回任务对象供阶段等待结果。"""
         task = asyncio.create_task(coro)
         self._tasks.append(task)
         return task
 
     async def cancel_pending(self) -> None:
+        """取消所有尚未完成的后台任务，避免客户端断开后继续消耗资源。"""
         pending = [task for task in self._tasks if not task.done()]
         if not pending:
             return
@@ -28,6 +31,7 @@ class _StreamTaskGroup:
 
 @dataclass
 class _StreamPipelineContext:
+    """流式导购请求的跨阶段状态容器。"""
     user_query: str
     conversation_history: Optional[List[Dict[str, str]]]
     max_tool_calls: int

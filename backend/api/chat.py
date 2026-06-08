@@ -72,6 +72,7 @@ class ModelsResponse(BaseModel):
 
 
 def _public_model_info(item: Dict[str, str]) -> ModelInfo:
+    """隐藏 base_url/api_key，只向客户端暴露可展示的模型信息。"""
     return ModelInfo(
         id=item["id"],
         name=item["name"],
@@ -80,6 +81,7 @@ def _public_model_info(item: Dict[str, str]) -> ModelInfo:
 
 
 def _as_string_list(value: Any) -> List[str]:
+    """把模型过滤配置统一转成字符串列表。"""
     if isinstance(value, str):
         return [value]
     if isinstance(value, list):
@@ -88,6 +90,7 @@ def _as_string_list(value: Any) -> List[str]:
 
 
 def _matches_any_pattern(model_id: str, patterns: List[str]) -> bool:
+    """判断模型 ID 是否命中任意通配符模式。"""
     return any(fnmatch.fnmatch(model_id, pattern) for pattern in patterns)
 
 
@@ -109,6 +112,7 @@ def _filter_discovered_models(
     collapse_variants: bool,
     ark_endpoint_only: bool,
 ) -> List[Dict[str, str]]:
+    """按 allow/deny/方舟接入点规则过滤自动发现的模型。"""
     filtered: List[Dict[str, str]] = []
     for model in models:
         model_id = model["id"]
@@ -123,6 +127,7 @@ def _filter_discovered_models(
     if not collapse_variants:
         return filtered
 
+    # 某些服务会返回同模型不同日期/上下文版本，这里按模型族折叠为一个展示项。
     by_family: Dict[str, Dict[str, str]] = {}
     for model in filtered:
         family = _normalize_model_family(model["id"])
@@ -152,6 +157,7 @@ async def _discover_models_from_sources_unlocked(settings) -> List[Dict[str, str
     for source in settings.llm_model_discovery_sources:
         models_url = source["base_url"].rstrip("/") + "/models"
         try:
+            # 这里直接访问 OpenAI-compatible /models，仅用于生成客户端可选列表。
             async with httpx.AsyncClient(timeout=20.0, trust_env=False) as client:
                 response = await client.get(
                     models_url,
@@ -203,6 +209,7 @@ async def _discover_models_from_sources_unlocked(settings) -> List[Dict[str, str
 
 
 async def _get_server_model_config(model_id: Optional[str]) -> Optional[Dict[str, str]]:
+    """查找指定模型的服务端连接配置，必要时触发一次自动发现。"""
     from config.settings import settings
 
     server_model_config = settings.get_llm_model_option(model_id)
@@ -268,6 +275,7 @@ async def chat_endpoint(request: ChatRequest):
         current_conv_id = history_service.ensure_default_conversation(request.user_id)
 
         if request.conv_id:
+            # 客户端传入会话 ID 时只允许切换到该用户已存在的会话。
             convs = history_service.get_conversations(request.user_id)
             conv_ids = [conv["conv_id"] for conv in convs]
             if request.conv_id in conv_ids:
@@ -281,10 +289,13 @@ async def chat_endpoint(request: ChatRequest):
 
         server_model_config = await _get_server_model_config(request.model)
         local_model_config = request.llm_config.model_dump() if request.llm_config else None
+        # 客户端本地模型配置优先级最高，服务端只负责透传本轮连接信息。
         active_model_config = local_model_config or server_model_config
 
         if request.model and not active_model_config:
+            # 模型 ID 不可用时仍返回 SSE，前端可按同一协议处理错误和结束。
             async def unknown_model_stream():
+                """输出模型不存在的单条 SSE 错误事件。"""
                 data = {
                     "error": f"模型未配置或未发现：{request.model}。请刷新模型列表并选择可用模型。",
                     "done": True
@@ -305,6 +316,7 @@ async def chat_endpoint(request: ChatRequest):
 
             if settings.available_llm_models:
                 async def no_model_stream():
+                    """输出模型列表配置存在但没有可用模型的 SSE 错误事件。"""
                     data = {
                         "error": "未找到可用模型。请检查 AVAILABLE_LLM_MODELS、api_key_env 和模型发现过滤配置。",
                         "done": True
@@ -321,7 +333,9 @@ async def chat_endpoint(request: ChatRequest):
                 )
 
         if not llm_service.connected and not (active_model_config and active_model_config.get("api_key")):
+            # 无任何可用 API Key 时进入模拟流，便于前端在未配置 LLM 时仍能联调。
             async def mock_stream():
+                """输出未配置 LLM 时的模拟 SSE 回复。"""
                 mock_reply = f"您好！我收到了您的消息：'{request.user_query}'。\n\n这是模拟回复。要使用真实的AI对话功能，请配置 LLM_API_KEY 环境变量。"
                 data = {
                     "content": mock_reply,
@@ -341,12 +355,14 @@ async def chat_endpoint(request: ChatRequest):
             )
 
         history = [
+            # 丢弃 system 消息，避免客户端系统提示覆盖后端导购安全/工具约束。
             {"role": msg.role, "content": msg.content}
             for msg in request.messages
             if msg.role != "system"
         ]
 
         async def generate_stream():
+            """把服务层事件转换为前端 SSE JSON，并在结束时保存历史。"""
             full_reply = ""
             full_analysis = ""
             analysis_summary = ""
@@ -354,6 +370,7 @@ async def chat_endpoint(request: ChatRequest):
             history_saved = False
 
             def save_history_once() -> bool:
+                """保存本轮用户问题、助手回复和需求分析；保证最多执行一次。"""
                 nonlocal history_saved
                 if history_saved or not full_reply.strip():
                     return history_saved
@@ -393,6 +410,7 @@ async def chat_endpoint(request: ChatRequest):
                     chunk_type = chunk.get("type")
 
                     if chunk_type == "status":
+                        # status 事件只表示阶段进度，不计入最终回复文本。
                         data = {
                             "status": chunk.get("content", ""),
                             "phase": chunk.get("phase"),
@@ -403,6 +421,7 @@ async def chat_endpoint(request: ChatRequest):
                         yield f"data: {json.dumps(data, ensure_ascii=False)}\n\n"
 
                     elif chunk_type == "analysis":
+                        # analysis 同时用于前端展示“思考/需求分析”和历史中的 thinking 字段。
                         analysis_content = chunk.get("content", "")
                         summary_content = chunk.get("summary", "")
                         if analysis_content:
@@ -441,6 +460,7 @@ async def chat_endpoint(request: ChatRequest):
                         yield f"data: {json.dumps(data, ensure_ascii=False)}\n\n"
 
                     if chunk_type == "content":
+                        # content 是真正展示给用户并保存到历史的助手回复。
                         content = chunk.get("content", "")
                         full_reply += content
                         data = {
@@ -451,6 +471,7 @@ async def chat_endpoint(request: ChatRequest):
                         yield f"data: {json.dumps(data, ensure_ascii=False)}\n\n"
 
                     elif chunk_type == "done":
+                        # done 到达后先通知前端保存中，再落盘历史，最后发送最终 done。
                         timings = chunk.get("timings")
 
                         if timings:
@@ -505,6 +526,7 @@ async def chat_endpoint(request: ChatRequest):
                 }
                 yield f"data: {json.dumps(error_data, ensure_ascii=False)}\n\n"
             finally:
+                # 如果生成器异常退出但已经产生回复，尽量补一次历史保存。
                 if not history_saved and full_reply.strip():
                     save_history_once()
 

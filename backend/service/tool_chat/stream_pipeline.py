@@ -16,7 +16,11 @@ logger = get_logger("service.tool_chat")
 
 
 class ToolChatStreamMixin(ToolChatStreamStagesMixin, ToolChatStreamFinalMixin, ToolChatStreamToolLoopMixin):
-    """阶段化流式工具对话编排。"""
+    """阶段化流式工具对话编排。
+
+    本 mixin 只负责入口和阶段顺序；每个阶段的具体逻辑拆在相邻模块中，
+    这样 API 层可以统一消费事件，而内部可以继续扩展阶段。
+    """
 
     async def chat_with_tools_stream(
         self,
@@ -26,7 +30,7 @@ class ToolChatStreamMixin(ToolChatStreamStagesMixin, ToolChatStreamFinalMixin, T
         model: Optional[str] = None,
         model_config: Optional[Dict[str, Any]] = None,
     ) -> AsyncGenerator[Dict[str, Any], None]:
-        """使用原生 function calling 进行对话，按阶段流式返回结果。"""
+        """使用原生 function calling 进行对话，按阶段流式返回 SSE 事件 payload。"""
         timings: Dict[str, Any] = {"parallel_enabled": settings.tool_chat_parallel_enabled}
         t_total_start = time.perf_counter()
 
@@ -46,6 +50,7 @@ class ToolChatStreamMixin(ToolChatStreamStagesMixin, ToolChatStreamFinalMixin, T
             }
             return
 
+        # 上下文保存一轮请求的所有可变状态，避免阶段函数靠大量参数传递。
         ctx = _StreamPipelineContext(
             user_query=user_query,
             conversation_history=conversation_history,
@@ -59,6 +64,7 @@ class ToolChatStreamMixin(ToolChatStreamStagesMixin, ToolChatStreamFinalMixin, T
             task_group=_StreamTaskGroup(),
         )
 
+        # 阶段顺序即导购主流程；阶段函数可以通过 `ctx.completed` 提前终止后续步骤。
         pipeline = [
             self._stream_stage_parallel_bootstrap,
             self._stream_stage_rag_pipeline,
@@ -75,4 +81,5 @@ class ToolChatStreamMixin(ToolChatStreamStagesMixin, ToolChatStreamFinalMixin, T
                 async for event in stage(ctx):
                     yield event
         finally:
+            # 客户端断开或任一阶段提前返回时，取消尚未完成的并行分析/查询任务。
             await ctx.task_group.cancel_pending()

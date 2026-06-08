@@ -16,11 +16,13 @@ class ToolChatRagMixin:
     """知识库检索、上下文构造和 RAG rerank 能力。"""
 
     def _query_context_docs(self, user_query: str) -> List[Any]:
+        """兼容新旧向量库接口，优先返回带来源 metadata 的结构化片段。"""
         if hasattr(self.vector_store, "query_with_sources"):
             return self.vector_store.query_with_sources(user_query)
         return self.vector_store.query(user_query)
 
     async def _query_context_docs_with_timeout(self, user_query: str) -> tuple[List[Any], Optional[str]]:
+        """在线程中执行向量检索，并用配置超时保护聊天主流程。"""
         try:
             context_docs = await asyncio.wait_for(
                 asyncio.to_thread(self._query_context_docs, user_query),
@@ -38,6 +40,7 @@ class ToolChatRagMixin:
 
     @staticmethod
     def _build_rag_rerank_messages(user_query: str, context_docs: List[Any]) -> List[Dict[str, str]]:
+        """构造 RAG 候选片段评分 prompt，要求 LLM 只返回 JSON。"""
         candidates: list[Dict[str, Any]] = []
         max_candidates = max(1, int(settings.rag_llm_rerank_max_candidates or len(context_docs)))
         for index, item in enumerate(context_docs[:max_candidates], start=1):
@@ -87,6 +90,7 @@ class ToolChatRagMixin:
 
     @staticmethod
     def _parse_rag_rerank_response(raw_text: str) -> List[Dict[str, Any]]:
+        """解析 LLM rerank 返回的 JSON，容忍 markdown code fence 和额外文本。"""
         text = (raw_text or "").strip()
         if not text:
             return []
@@ -139,6 +143,7 @@ class ToolChatRagMixin:
         model: Optional[str] = None,
         model_config: Optional[Dict[str, Any]] = None,
     ) -> tuple[List[Any], Optional[str], Dict[str, Any]]:
+        """用 LLM 检查 RAG 片段相关性，并返回过滤后的片段与调试信息。"""
         debug: Dict[str, Any] = {
             "query": user_query,
             "min_score": settings.rag_llm_rerank_min_score,
@@ -151,6 +156,7 @@ class ToolChatRagMixin:
             "error": None,
         }
         if not settings.rag_llm_rerank_enabled or not context_docs:
+            # 未开启或无候选时直接沿用原结果。
             debug["decision"] = "skipped"
             return context_docs, None, debug
         if settings.rag_llm_rerank_skip_single_candidate and len(context_docs) <= 1:
@@ -203,6 +209,7 @@ class ToolChatRagMixin:
 
         docs_by_id: Dict[str, Any] = {}
         for index, item in enumerate(rerank_docs, start=1):
+            # LLM 可能返回候选序号、片段 id、商品 id 或标题，这里统一建立别名索引。
             if not isinstance(item, dict):
                 continue
             metadata = item.get("metadata") or {}
@@ -268,6 +275,7 @@ class ToolChatRagMixin:
             )
 
         if not reranked_docs and matched_docs:
+            # 有匹配但都低于阈值，说明知识库上下文可能会误导最终回复，直接丢弃。
             error = "LLM RAG 检查未达到保留阈值，已丢弃知识库上下文"
             logger.warning(error)
             debug["decision"] = "below_threshold_drop_all"
@@ -284,7 +292,7 @@ class ToolChatRagMixin:
             return context_docs, error, debug
 
         debug["decision"] = "kept_above_threshold"
+        # 未送入 rerank 的尾部片段保持原向量顺序追加，避免 max_candidates 截断所有上下文。
         final_docs = reranked_docs + tail_docs
         debug["kept"] = self._summarize_context_docs(final_docs)
         return final_docs, None, debug
-

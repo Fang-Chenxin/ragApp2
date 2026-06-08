@@ -12,9 +12,13 @@ logger = get_logger("service.rag")
 
 
 class EmbeddingService:
-    """Embedding 服务封装类"""
+    """Embedding 服务封装类。
+
+    Chroma 可以使用默认本地 embedding，也可以在配置开启后接入豆包 embedding。
+    """
 
     def __init__(self):
+        """初始化 embedding 客户端状态。"""
         self.client: Optional[AsyncOpenAI] = None
         self.embedding_function = None
         self.connected = False
@@ -47,6 +51,7 @@ class EmbeddingService:
             )
             self.connected = True
         else:
+            # embedding_function 为 None 时，Chroma 使用自身默认 embedding 函数。
             logger.info("✅ 使用本地免费 all-MiniLM-L6-v2 Embedding 模型")
 
     @staticmethod
@@ -62,9 +67,10 @@ class EmbeddingService:
 
 
 class VectorStore:
-    """向量数据库封装类"""
+    """Chroma 向量数据库封装类，负责知识片段写入和相似查询。"""
 
     def __init__(self):
+        """初始化 Chroma 客户端和 collection 占位。"""
         self.client: Optional[chromadb.PersistentClient] = None
         self.collection: Optional[Collection] = None
 
@@ -76,6 +82,7 @@ class VectorStore:
         )
 
         embedding_func = embedding_service.get_embedding_function()
+        # 有远程 embedding 配置时显式传给 collection；否则沿用 Chroma 默认 embedding。
         if embedding_func:
             self.collection = self.client.get_or_create_collection(
                 name=settings.chroma_collection_name,
@@ -94,7 +101,7 @@ class VectorStore:
 
     @staticmethod
     def infer_query_category(query_text: str) -> Optional[str]:
-        """Infer the product category scope from explicit shopping terms."""
+        """从用户问题中的显式购物词推断 RAG 品类过滤范围。"""
         query = (query_text or "").lower()
         category_keywords = [
             (
@@ -175,6 +182,7 @@ class VectorStore:
         inferred_category = category or self.infer_query_category(query_text)
         where_filter = {"category": inferred_category} if inferred_category else None
 
+        # 先按推断品类过滤，减少“鞋子问题命中手机知识片段”这类跨品类噪声。
         query_kwargs: Dict[str, Any] = {
             "query_texts": [query_text],
             "n_results": k,
@@ -187,6 +195,7 @@ class VectorStore:
 
         documents = results.get("documents") or []
         if (not documents or not documents[0]) and where_filter:
+            # 品类过滤没有命中时回退到全库检索，避免过度过滤导致完全无上下文。
             logger.info(
                 "[RAGVectorSearch] query=%s | category=%s | filtered_count=0 | fallback=unfiltered",
                 query_text,
@@ -217,6 +226,7 @@ class VectorStore:
                 "distance": distances[index] if index < len(distances) else None,
             }
             items.append(item)
+            # DEBUG 日志记录向量距离和片段预览，便于判断 RAG 误命中来自检索还是 rerank。
             content_preview = str(content or "")[: max(80, int(settings.rag_trace_content_chars or 800))]
             content_preview = content_preview.replace("\n", " ")
             logger.info(
@@ -250,6 +260,7 @@ class VectorStore:
             raise RuntimeError("向量数据库未初始化")
 
         if not doc_id:
+            # 简单顺序 ID 适合手动添加知识；批量导入时可传稳定 doc_id 防重复。
             doc_id = f"doc_{self.collection.count() + 1}"
 
         self.collection.add(
@@ -268,9 +279,10 @@ class VectorStore:
 
 
 class RAGService:
-    """RAG 核心服务 - 整合检索和生成"""
+    """通用 RAG 核心服务，保留给非导购型问答接口使用。"""
 
     def __init__(self, vector_store: VectorStore, llm: LLMService):
+        """注入向量库和 LLM 服务。"""
         self.vector_store = vector_store
         self.llm = llm
 
@@ -283,6 +295,7 @@ class RAGService:
         context_docs = self.vector_store.query_with_sources(user_query)
         context_text = self.vector_store.format_results_as_context(context_docs)
 
+        # 先把知识库片段放入 system，再追加历史和当前问题，保持“知识优先但可正常回答”的语义。
         system_prompt = f"""你是一个智能Agent对话助手。
 参考知识库内容：
 {context_text}
@@ -292,6 +305,7 @@ class RAGService:
         messages = [{"role": "system", "content": system_prompt}]
 
         if conversation_history:
+            # 历史消息按原 role 追加，避免把 assistant 回复误当作系统约束。
             for msg in conversation_history:
                 messages.append({"role": msg["role"], "content": msg["content"]})
 

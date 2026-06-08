@@ -9,7 +9,7 @@ router = APIRouter(prefix="/api/product-search", tags=["product-search"])
 
 
 class ProductSearchRequest(BaseModel):
-    """商品搜索请求模型"""
+    """结构化商品搜索请求模型。"""
     keyword: Optional[str] = None
     brand: Optional[str] = None
     category: Optional[str] = None
@@ -20,14 +20,14 @@ class ProductSearchRequest(BaseModel):
 
 
 class ProductTextSearchRequest(BaseModel):
-    """自然语言搜索请求模型"""
+    """自然语言商品搜索请求模型。"""
     text: str
     limit: int = 10
     show_skus: bool = False
 
 
 class ToolCallRequest(BaseModel):
-    """工具调用请求模型"""
+    """调试 OpenAI 工具调用时使用的请求模型。"""
     tool_name: str
     arguments: Optional[Dict[str, Any]] = None
 
@@ -53,6 +53,7 @@ async def search_by_text(
     try:
         from service import sqlite_product_search_service
         
+        # 自然语言入口会交给 engine 解析品牌、品类和属性，再执行结构化查询。
         result = sqlite_product_search_service.search_by_rule_parsed_text(text=text, limit=limit, show_skus=show_skus)
         
         if not result.get("ok"):
@@ -82,6 +83,7 @@ async def search_products(request: ProductSearchRequest):
     try:
         from service import sqlite_product_search_service
         
+        # POST 结构化搜索适合后端/测试直接传入明确过滤条件。
         result = sqlite_product_search_service.search_products(
             keyword=request.keyword,
             brand=request.brand,
@@ -135,6 +137,7 @@ async def search_products_get(
         
         attr_filters = []
         if attr_key and attr_value:
+            # GET 参数用并列数组表示属性过滤器，zip 后转成服务层统一格式。
             for key, value in zip(attr_key, attr_value):
                 attr_filters.append({"key": key, "value": value})
         
@@ -172,6 +175,7 @@ async def get_tool_spec():
     try:
         from service.product_search.query_tool import get_tool_spec as get_sqlite_query_tool_spec
 
+        # 直接返回 Function Calling schema，方便前端或调试工具查看可传参数。
         return get_sqlite_query_tool_spec()
         
     except HTTPException:
@@ -196,6 +200,7 @@ async def run_tool(request: ToolCallRequest):
     try:
         from service.product_search.query_tool import run_tool as run_sqlite_query_tool
 
+        # 该接口绕过 LLM，便于复现某一次工具调用的参数和结果。
         result = run_sqlite_query_tool(request.tool_name, request.arguments)
         
         return result

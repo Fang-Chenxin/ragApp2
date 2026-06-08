@@ -21,6 +21,7 @@ class ToolChatTraceMixin:
         agent: str = "shopping_agent",
         extra: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
+        """生成给前端展示进度的 status 事件。"""
         payload: Dict[str, Any] = {
             "type": "status",
             "content": content,
@@ -34,6 +35,7 @@ class ToolChatTraceMixin:
 
     @staticmethod
     def _format_context_docs(context_docs: List[Any]) -> str:
+        """把 RAG 片段转成最终 prompt 可读的上下文文本。"""
         lines: list[str] = []
         for index, item in enumerate(context_docs, start=1):
             if not isinstance(item, dict):
@@ -60,6 +62,7 @@ class ToolChatTraceMixin:
 
     @staticmethod
     def _extract_rag_sources(context_docs: List[Any]) -> List[Dict[str, Any]]:
+        """从结构化 RAG 片段中抽取前端可展示的来源商品。"""
         sources: list[Dict[str, Any]] = []
         seen: set[str] = set()
 
@@ -91,6 +94,7 @@ class ToolChatTraceMixin:
 
     @staticmethod
     def _summarize_context_docs(context_docs: List[Any]) -> List[Dict[str, Any]]:
+        """生成日志/debug 事件中的 RAG 候选摘要，避免直接塞入过长片段。"""
         summaries: list[Dict[str, Any]] = []
         content_limit = max(80, int(settings.rag_trace_content_chars or 800))
         for index, item in enumerate(context_docs, start=1):
@@ -126,6 +130,7 @@ class ToolChatTraceMixin:
 
     @staticmethod
     def _debug_chunk(phase: str, title: str, **extra: Any) -> Dict[str, Any]:
+        """生成内部调试事件，API 层通常不展示正文但日志会完整记录。"""
         payload: Dict[str, Any] = {
             "type": "debug",
             "phase": phase,
@@ -138,6 +143,7 @@ class ToolChatTraceMixin:
 
     @staticmethod
     def _format_trace_item(prefix: str, item: Dict[str, Any]) -> str:
+        """格式化单条商品/知识片段摘要日志。"""
         return (
             f"      {prefix} id={item.get('product_id') or item.get('id')} "
             f"title={item.get('title')} cat={item.get('category')}/"
@@ -148,6 +154,7 @@ class ToolChatTraceMixin:
 
     @staticmethod
     def _format_trace_content(item: Dict[str, Any]) -> str:
+        """格式化知识片段原文预览日志。"""
         content = str(item.get("content") or item.get("preview") or "").strip()
         if not content:
             return ""
@@ -155,6 +162,7 @@ class ToolChatTraceMixin:
 
     @staticmethod
     def _format_rag_decision(decision: str) -> str:
+        """把内部 rerank 决策码翻译成日志可读文本。"""
         decisions = {
             "skipped": "跳过（未启用LLM核验或无候选文档）",
             "skipped_single_candidate": "跳过（只有1条候选，直接使用向量结果）",
@@ -171,6 +179,7 @@ class ToolChatTraceMixin:
 
     @classmethod
     def _log_trace_chunk(cls, chunk: Dict[str, Any]) -> None:
+        """按 debug chunk 的 phase 输出结构化可读日志。"""
         if not logger.isEnabledFor(10):
             return
 
@@ -264,4 +273,3 @@ class ToolChatTraceMixin:
         logger.debug("    工具查询: %ss (%s轮)", timings.get('tool_calls', '-'), timings.get('tool_rounds', '?'))
         logger.debug("    总计:     %ss", timings.get('total', '-'))
         logger.debug("  ────────────────────────────────────")
-

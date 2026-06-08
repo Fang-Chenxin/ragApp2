@@ -27,7 +27,11 @@ logger = get_logger("main")
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """应用生命周期管理"""
+    """应用生命周期管理。
+
+    FastAPI 在启动时进入此上下文，先初始化服务层的全局单例；
+    退出时再释放服务资源。API 路由中依赖的 `service.*` 对象都在这里完成装配。
+    """
     logger.info(
         "🚀 正在启动服务...\n"
         "✅ LLM 服务初始化中...\n"
@@ -82,7 +86,7 @@ app.include_router(sqlite_product_search_router)
 
 @app.get("/")
 async def root():
-    """根路径 - 服务健康检查"""
+    """返回服务基本信息，用于浏览器直接访问根路径时确认后端已启动。"""
     return {
         "message": "Agent 对话应用后端服务运行正常！",
         "version": "1.0.0",
@@ -97,6 +101,7 @@ async def health_check():
     用于 Kubernetes/负载均衡器的健康探测
     """
 
+    # 这里保持轻量检查，只读取内存状态和向量库计数，避免健康探针触发外部 LLM 请求。
     return {
         "status": "healthy",
         "services": {

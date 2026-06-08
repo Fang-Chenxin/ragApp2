@@ -17,6 +17,7 @@ class ToolChatStreamFinalMixin:
         self,
         ctx: _StreamPipelineContext,
     ) -> tuple[List[Dict[str, Any]], list[str], list[Dict[str, Any]]]:
+        """合并并校验目标商品，同时生成前端和日志可见的调试 payload。"""
         tool_selected_products = self._extract_selected_products(ctx.tool_results, ctx.tool_call_order)
         selected_products = self._build_target_products(ctx.direct_selected_products, tool_selected_products, ctx.user_query)
         selected_product_ids = [item["product_id"] for item in selected_products]
@@ -44,6 +45,7 @@ class ToolChatStreamFinalMixin:
         return selected_products, selected_product_ids, payloads
 
     def _stream_update_tool_timings(self, ctx: _StreamPipelineContext) -> None:
+        """把上下文累计耗时同步到最终 timings 字段。"""
         ctx.timings["llm_calls"] = round(ctx.llm_call_total, 3)
         ctx.timings["llm_rounds"] = ctx.llm_rounds
         ctx.timings["analysis_calls"] = ctx.timings.get("analysis_calls", 0)
@@ -55,6 +57,7 @@ class ToolChatStreamFinalMixin:
         ctx: _StreamPipelineContext,
         assistant_message: Any,
     ) -> AsyncGenerator[Dict[str, Any], None]:
+        """处理 LLM 没有继续调用工具、直接给出文本回复的情况。"""
         reply_preview = (assistant_message.content or "")[:200].replace('\n', ' ')
         logger.debug("      ✅ 无工具调用，开始流式返回文本")
         logger.debug("      回复预览: %s...", reply_preview)
@@ -79,6 +82,7 @@ class ToolChatStreamFinalMixin:
         yield trace_chunk
 
         if needs_constrained_final:
+            # 即使 LLM 已经给出直接回复，只要有已校验目标商品，就再生成一次受清单约束的最终回复。
             logger.debug("      存在目标商品，基于数据库目标清单流式生成最终回复")
             final_messages = self._build_final_recommendation_messages(
                 ctx.final_system_prompt,
@@ -129,6 +133,7 @@ class ToolChatStreamFinalMixin:
             ctx.timings["llm_calls"] = round(ctx.llm_call_total, 3)
             ctx.timings["llm_rounds"] = ctx.llm_rounds
             if not generated_content.strip():
+                # 模型流式返回空内容时，用确定性模板保证前端能收到可读推荐。
                 fallback_reply = self._build_deterministic_final_reply(ctx.user_query, selected_products)
                 if fallback_reply:
                     yield self._debug_chunk(
@@ -149,6 +154,7 @@ class ToolChatStreamFinalMixin:
         self,
         ctx: _StreamPipelineContext,
     ) -> AsyncGenerator[Dict[str, Any], None]:
+        """工具循环结束后的标准最终回复阶段。"""
         selected_products, selected_product_ids, payloads = self._stream_selected_product_payloads(ctx)
         for payload in payloads:
             yield payload
@@ -195,6 +201,7 @@ class ToolChatStreamFinalMixin:
                 if sanitized_chunk:
                     yield {"type": "content", "content": sanitized_chunk, "timings": None}
             if not generated_content.strip():
+                # 最终兜底保证 `done` 前至少有机会输出基于数据库商品的确定性文本。
                 fallback_reply = self._build_deterministic_final_reply(ctx.user_query, selected_products)
                 if fallback_reply:
                     yield self._debug_chunk(
@@ -231,4 +238,3 @@ class ToolChatStreamFinalMixin:
         self._print_timings_summary(ctx.timings)
         yield {"type": "done", "content": "", "timings": ctx.timings}
         ctx.completed = True
-

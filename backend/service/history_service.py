@@ -16,8 +16,9 @@ _BACKEND_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 
 class ConversationInfo:
-    """会话信息"""
+    """会话元信息的轻量对象；当前主要由历史实现保留，API 层直接返回 dict。"""
     def __init__(self, conv_id: str, title: str, created_at: str, message_count: int, last_message: str = ""):
+        """保存会话列表需要展示的基础字段。"""
         self.conv_id = conv_id
         self.title = title
         self.created_at = created_at
@@ -29,6 +30,7 @@ class HistoryService:
     """对话历史服务 - 支持多会话管理"""
 
     def __init__(self):
+        """初始化历史文件根目录。"""
         self.storage_path = os.path.join(_BACKEND_DIR, "data", "history")
         self._ensure_storage_dir()
 
@@ -37,7 +39,10 @@ class HistoryService:
         os.makedirs(self.storage_path, exist_ok=True)
 
     def _get_user_dir(self, user_id: str) -> str:
-        """获取用户目录路径"""
+        """获取用户目录路径。
+
+        用户 ID 先 hash 再落盘，避免真实用户标识直接出现在文件名中。
+        """
         import hashlib
         user_hash = hashlib.sha256(user_id.encode()).hexdigest()[:16]
         user_dir = os.path.join(self.storage_path, f"user_{user_hash}")
@@ -55,10 +60,12 @@ class HistoryService:
         return os.path.join(user_dir, "meta.json")
 
     def _get_lock_file(self, file_path: str) -> str:
+        """返回某个 JSON 文件对应的锁文件路径。"""
         return f"{file_path}.lock"
 
     @contextmanager
     def _file_lock(self, file_path: str):
+        """对指定文件使用跨进程排他锁，保护并发写入。"""
         lock_path = self._get_lock_file(file_path)
         os.makedirs(os.path.dirname(lock_path), exist_ok=True)
         with open(lock_path, "a", encoding="utf-8") as lock_file:
@@ -69,6 +76,7 @@ class HistoryService:
                 fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
 
     def _atomic_write_json(self, file_path: str, data) -> None:
+        """原子写 JSON：先写临时文件并 fsync，再 replace 到目标路径。"""
         os.makedirs(os.path.dirname(file_path), exist_ok=True)
         tmp_path = f"{file_path}.{uuid.uuid4().hex}.tmp"
         try:
@@ -82,6 +90,7 @@ class HistoryService:
                 os.remove(tmp_path)
 
     def _read_json_file(self, file_path: str, default):
+        """读取 JSON 文件；不存在时返回调用方提供的默认值。"""
         if not os.path.exists(file_path):
             return default
         with open(file_path, "r", encoding="utf-8") as f:
@@ -117,7 +126,7 @@ class HistoryService:
         conv_id = str(uuid.uuid4())[:8]
         created_at = datetime.now().isoformat()
         
-        # 检查当前会话是否为空，如果为空则删除
+        # 创建新会话前清理当前空会话，避免用户连续点“新建”产生一串无内容会话。
         meta = self._load_user_meta(user_id)
         current_conv_id = meta.get("current_conv")
         if current_conv_id:
@@ -142,7 +151,7 @@ class HistoryService:
         if not title:
             title = f"对话 {len(meta.get('conversations', [])) + 1}"
         
-        # 保存空会话文件
+        # 先落空会话文件，再更新 meta，保证 meta 指向的会话文件已经存在。
         conv_file = self._get_conv_file(user_id, conv_id)
         with self._file_lock(conv_file):
             self._atomic_write_json(conv_file, [])
@@ -221,7 +230,7 @@ class HistoryService:
         if conv_id not in conv_ids:
             return False
         
-        # 删除会话文件
+        # 删除会话文件后再更新 meta；如果删除当前会话，需要重新选择一个可用会话。
         if os.path.exists(conv_file):
             os.remove(conv_file)
         
@@ -294,7 +303,7 @@ class HistoryService:
             self._update_conv_meta(user_id, conv_id, len(history), content)
 
     def _update_conv_meta(self, user_id: str, conv_id: str, message_count: int, last_message: str):
-        """更新会话元数据"""
+        """同步会话列表中的消息数量和最后一条消息预览。"""
         meta = self._load_user_meta(user_id)
         
         for conv in meta.get("conversations", []):
@@ -316,7 +325,7 @@ class HistoryService:
         Returns:
             消息列表
         """
-        # 如果没有指定会话ID，使用当前会话
+        # 如果没有指定会话ID，使用当前会话。
         if not conv_id:
             conv_id = self.get_current_conversation(user_id)
         

@@ -15,6 +15,7 @@ class ToolChatPromptMixin:
         conversation_history: Optional[List[Dict[str, str]]],
         user_query: str,
     ) -> List[Dict[str, str]]:
+        """构造需求分析子任务消息，输出给前端展示并作为最终推荐摘要。"""
         history_context = ToolChatPromptMixin._build_history_context(conversation_history, user_query)
         return [
             {
@@ -36,6 +37,7 @@ class ToolChatPromptMixin:
 
     @staticmethod
     def _build_need_analysis_summary(user_query: str, conversation_history: Optional[List[Dict[str, str]]] = None) -> str:
+        """LLM 分析失败或为空时的规则兜底摘要。"""
         query = user_query.strip()
 
         scene_tags: list[str] = []
@@ -74,6 +76,7 @@ class ToolChatPromptMixin:
 
     @staticmethod
     def _build_tool_planning_prompt(conversation_history: Optional[List[Dict[str, str]]], user_query: str) -> str:
+        """构造工具规划 system prompt，指导 LLM 把用户需求转成 `query_products` 参数。"""
         return (
             "你是导购助手的商品查询规划子角色。你的任务是把用户需求转成 query_products 工具查询，"
             "不要依赖知识库内容，也不要编造商品事实。\n\n"
@@ -100,6 +103,7 @@ class ToolChatPromptMixin:
         conversation_history: Optional[List[Dict[str, str]]],
         user_query: str,
     ) -> list[Dict[str, Any]]:
+        """构造工具循环的初始 messages：system + 历史 + 当前用户问题。"""
         messages: list[Dict[str, Any]] = [
             {
                 "role": "system",
@@ -114,6 +118,7 @@ class ToolChatPromptMixin:
 
     @staticmethod
     def _build_system_prompt(context_text: str, conversation_history: Optional[List[Dict[str, str]]], user_query: str) -> str:
+        """构造最终回复 system prompt，强调商品事实以 SQLite 工具结果为准。"""
         rag_section = context_text.strip() or "（知识库未命中或无可用上下文，请主要依据商品数据库工具结果回答。）"
         return (
             "你是一个资深导购型商品助手，负责整合商品数据库查询结果和可用知识库线索，"
@@ -142,6 +147,7 @@ class ToolChatPromptMixin:
         product_mentions: list[str] = []
 
         for msg in reversed(conversation_history):
+            # 先识别历史中出现的内部 product_id，再回查数据库得到用户可理解的商品名/品牌。
             content = msg.get("content", "")
             if not content:
                 continue
@@ -181,6 +187,7 @@ class ToolChatPromptMixin:
         if not product_mentions:
             return ""
 
+        # 去重后注入 prompt，让“上面那几款/这个牌子”这类追问能转成有效工具参数。
         seen: set[str] = set()
         unique: list[str] = []
         for item in product_mentions:

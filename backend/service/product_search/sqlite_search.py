@@ -20,9 +20,10 @@ logger = get_logger("service.sqlite_product")
 
 
 class SQLiteProductSearchService:
-    """SQLite 商品搜索服务封装类"""
+    """SQLite 商品搜索服务封装类，给 API 和工具调用提供稳定接口。"""
 
     def __init__(self):
+        """解析数据库和 ontology 路径；真实可用性在 `initialize()` 中检查。"""
         self.db_path = Path(settings.sqlite_product_db_path).resolve() if getattr(settings, "sqlite_product_db_path", None) else DEFAULT_DB_PATH
         self.ontology_path = DEFAULT_ONTOLOGY_PATH
         self._db_available = False
@@ -63,6 +64,7 @@ class SQLiteProductSearchService:
             查询结果字典，包含 parsed 字段（解析出的 keyword/brand/category/attr_filters）
         """
         if not self.db_available:
+            # 后端可在没有商品库的环境启动，方便联调其他模块。
             return self._mock_search_by_rule_parsed_text(text, limit, show_skus)
         
         try:
@@ -107,6 +109,7 @@ class SQLiteProductSearchService:
             查询结果字典
         """
         if not self.db_available:
+            # 数据库缺失时返回统一结构，调用方不必处理 None。
             return self._mock_search_products(
                 keyword, brand, category, sub_category, attr_filters, limit, show_skus
             )
@@ -154,6 +157,7 @@ class SQLiteProductSearchService:
                 "items": [],
             }
 
+        # 使用参数占位符避免把 product_id 拼进 SQL。
         placeholders = ",".join(["?"] * len(clean_ids))
         sql = (
             "SELECT product_id, title, brand, category, sub_category, base_price, image_path, marketing_desc "
@@ -176,6 +180,7 @@ class SQLiteProductSearchService:
             if conn is not None:
                 conn.close()
 
+        # 按输入 ID 顺序返回，保证最终推荐顺序不被 SQLite IN 查询打乱。
         by_id = {str(row["product_id"]): dict(row) for row in rows}
         ordered_items = [by_id[product_id] for product_id in clean_ids if product_id in by_id]
         return {
@@ -242,7 +247,7 @@ class SQLiteProductSearchService:
         }
 
     def close(self):
-        """关闭服务"""
+        """关闭服务；当前没有持久连接，仅输出生命周期日志。"""
         logger.info("SQLite 商品搜索服务已关闭")
 
 
