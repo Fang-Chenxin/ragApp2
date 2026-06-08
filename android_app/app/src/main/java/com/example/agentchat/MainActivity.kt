@@ -42,7 +42,8 @@ data class ChatMessage(
     val timings: Map<String, Any>? = null,
     val analysisExpanded: Boolean = true,
     val processingStatus: String? = null,
-    val streaming: Boolean = false
+    val streaming: Boolean = false,
+    val selectedProducts: List<SelectedProduct> = emptyList()
 )
 data class ChatRequest(
     val messages: List<ChatMessage>,
@@ -65,8 +66,13 @@ data class SelectedProduct(
     val category: String = "",
     @SerializedName("sub_category") val subCategory: String = "",
     @SerializedName("base_price") val basePrice: Any? = null,
+    @SerializedName("image_path") val imagePath: String = "",
+    @SerializedName("image_url") val imageUrl: String = "",
+    @SerializedName("landing_url") val landingUrl: String = "",
+    @SerializedName("marketing_desc") val marketingDesc: String = "",
     val source: String = "",
-    @SerializedName("recommendation_role") val recommendationRole: String = ""
+    @SerializedName("recommendation_role") val recommendationRole: String = "",
+    @SerializedName("match_type") val matchType: String = ""
 )
 data class StreamResponse(
     val content: String = "",
@@ -94,7 +100,8 @@ data class HistoryMessage(
     val role: String,
     val content: String,
     val timestamp: String? = null,
-    val thinking: String? = null
+    val thinking: String? = null,
+    @SerializedName("selected_products") val selectedProducts: List<SelectedProduct> = emptyList()
 )
 data class ModelOption(
     val id: String,
@@ -163,7 +170,7 @@ class MainActivity : AppCompatActivity() {
         return ConfigManager.getBackendUrl(this)
     }
     
-    private fun getBackendUrlWithPath(path: String): String {
+    fun getBackendUrlWithPath(path: String): String {
         return "${getBackendUrl()}$path"
     }
 
@@ -1025,7 +1032,14 @@ class MainActivity : AppCompatActivity() {
                                     if (hMsg.role == "user") {
                                         messages.add(ChatMessage("user", hMsg.content))
                                     } else if (hMsg.role == "assistant") {
-                                        messages.add(ChatMessage("assistant", hMsg.content, hMsg.thinking, null, true))
+                                        messages.add(ChatMessage(
+                                            "assistant",
+                                            hMsg.content,
+                                            hMsg.thinking,
+                                            null,
+                                            true,
+                                            selectedProducts = hMsg.selectedProducts
+                                        ))
                                     }
                                 }
 
@@ -1092,6 +1106,7 @@ class MainActivity : AppCompatActivity() {
         val fullAnalysis = StringBuilder()
         var currentProcessingStatus: String? = "正在分析需求..."
         var hasReceivedData = false
+        val collectedProducts = mutableListOf<SelectedProduct>()
         
         // 先添加助手的空占位消息
         runOnUiThread {
@@ -1218,6 +1233,19 @@ class MainActivity : AppCompatActivity() {
                                                 }
                                                 recyclerView.scrollToPosition(assistantMainMessageIndex)
                                             }
+
+                                            // 处理商品推荐
+                                            if (streamResponse.selectedProducts.isNotEmpty()) {
+                                                collectedProducts.clear()
+                                                collectedProducts.addAll(streamResponse.selectedProducts)
+                                                if (assistantMainMessageIndex >= 0) {
+                                                    val current = messages[assistantMainMessageIndex]
+                                                    messages[assistantMainMessageIndex] = current.copy(
+                                                        selectedProducts = collectedProducts.toList(),
+                                                    )
+                                                    adapter.notifyItemChanged(assistantMainMessageIndex)
+                                                }
+                                            }
                                             
                                             if (streamResponse.done) {
                                                 if (streamResponse.convId != null) {
@@ -1273,7 +1301,8 @@ class MainActivity : AppCompatActivity() {
         if (index >= 0 && index < messages.size) {
             val originalTimings = messages[index].timings
             val originalAnalysisExpanded = messages[index].analysisExpanded
-            messages[index] = ChatMessage("assistant", content, thinking, originalTimings, originalAnalysisExpanded)
+            val originalProducts = messages[index].selectedProducts
+            messages[index] = ChatMessage("assistant", content, thinking, originalTimings, originalAnalysisExpanded, selectedProducts = originalProducts)
             adapter.notifyItemChanged(index)
         }
     }
@@ -1282,7 +1311,8 @@ class MainActivity : AppCompatActivity() {
         if (index >= 0 && index < messages.size) {
             val originalTimings = messages[index].timings
             val originalAnalysisExpanded = messages[index].analysisExpanded
-            messages[index] = ChatMessage("assistant", "", null, originalTimings, originalAnalysisExpanded, status)
+            val originalProducts = messages[index].selectedProducts
+            messages[index] = ChatMessage("assistant", "", null, originalTimings, originalAnalysisExpanded, status, selectedProducts = originalProducts)
             adapter.notifyItemChanged(index)
         }
     }

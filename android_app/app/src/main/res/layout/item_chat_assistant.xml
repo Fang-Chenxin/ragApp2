@@ -77,6 +77,21 @@
         android:paddingTop="2dp"
         android:paddingBottom="2dp" />
 
+    <HorizontalScrollView
+        android:id="@+id/productCardsScroll"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:visibility="gone"
+        android:paddingTop="8dp"
+        android:paddingBottom="8dp">
+        <LinearLayout
+            android:id="@+id/productCardsContainer"
+            android:layout_width="wrap_content"
+            android:layout_height="match_parent"
+            android:orientation="horizontal"
+            android:paddingEnd="8dp" />
+    </HorizontalScrollView>
+
     <TextView
         android:id="@+id/assistantTimingsText"
         android:layout_width="match_parent"
