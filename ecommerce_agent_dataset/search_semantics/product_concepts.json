@@ -148,5 +148,35 @@
     "direct_terms": ["敏感肌", "敏感肌肤"],
     "fallback_terms": ["温和", "舒缓", "低刺激"],
     "category": "美妆护肤"
+  },
+  "服装": {
+    "direct_terms": ["服装", "衣服", "服饰", "穿搭", "搭配"],
+    "fallback_terms": ["T恤", "短袖", "卫衣", "裤", "裙"],
+    "category": "服饰运动"
+  },
+  "洗发水": {
+    "direct_terms": ["洗发水", "洗发露"],
+    "fallback_terms": ["护发素", "护发精华", "洁面", "沐浴露"],
+    "category": "美妆护肤"
+  },
+  "连衣裙": {
+    "direct_terms": ["连衣裙", "裙子"],
+    "fallback_terms": ["半身裙", "女装", "瑜伽裤"],
+    "category": "服饰运动"
+  },
+  "帽子": {
+    "direct_terms": ["帽子", "棒球帽", "鸭舌帽"],
+    "fallback_terms": [],
+    "category": "服饰运动"
+  },
+  "饼干": {
+    "direct_terms": ["饼干"],
+    "fallback_terms": ["糕点", "点心", "肉松饼", "坚果", "零食"],
+    "category": "食品饮料"
+  },
+  "办公设备": {
+    "direct_terms": ["办公设备", "办公用品"],
+    "fallback_terms": ["笔记本电脑", "平板电脑", "轻薄本"],
+    "category": "数码电子"
   }
 }

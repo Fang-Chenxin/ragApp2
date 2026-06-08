@@ -8,6 +8,14 @@ from .sqlite_search import sqlite_product_search_service
 
 def get_tool_spec() -> dict[str, Any]:
     """获取 SQLite 商品查询工具的 OpenAI Function Calling 规范。"""
+    category_tree = sqlite_product_search_service.get_category_tree()
+    category_schema: dict[str, Any] = {"type": ["string", "null"], "description": "产品分类，必须使用商品数据库中的真实一级类目"}
+    sub_category_schema: dict[str, Any] = {"type": ["string", "null"], "description": "子分类，必须使用商品数据库中的真实二级类目"}
+    if category_tree:
+        category_schema["enum"] = [None, *sorted(category_tree.keys())]
+        sub_categories = sorted({sub for subs in category_tree.values() for sub in subs})
+        sub_category_schema["enum"] = [None, *sub_categories]
+
     return {
         "type": "function",
         "function": {
@@ -20,8 +28,8 @@ def get_tool_spec() -> dict[str, Any]:
                     "text": {"type": "string", "description": "自然语言查询文本。"},
                     "keyword": {"type": ["string", "null"], "description": "关键词搜索"},
                     "brand": {"type": ["string", "null"], "description": "品牌过滤"},
-                    "category": {"type": ["string", "null"], "description": "产品分类"},
-                    "sub_category": {"type": ["string", "null"], "description": "子分类"},
+                    "category": category_schema,
+                    "sub_category": sub_category_schema,
                     "attr_filters": {
                         "type": "array",
                         "items": {
@@ -71,6 +79,58 @@ def run_tool(tool_name: str, arguments: Optional[Dict[str, Any]] = None) -> dict
     limit = int(args.get("limit", 10))
     show_skus = bool(args.get("show_skus", False))
 
+    attr_filters = _normalize_attr_filters(args.get("attr_filters"))
+    category_errors = sqlite_product_search_service.validate_category_filters(
+        category=args.get("category"),
+        sub_category=args.get("sub_category"),
+    )
+    if category_errors:
+        return {
+            "ok": False,
+            "error": "；".join(category_errors),
+            "validation_error": True,
+            "query_sql": "",
+            "query_params": [],
+            "resolved_filters": {
+                "category": args.get("category"),
+                "sub_category": args.get("sub_category"),
+            },
+            "total": 0,
+            "items": [],
+        }
+
+    structured_filters = {
+        "keyword": args.get("keyword"),
+        "brand": args.get("brand"),
+        "category": args.get("category"),
+        "sub_category": args.get("sub_category"),
+        "attr_filters": attr_filters,
+    }
+
+    if text and any(structured_filters.values()):
+        # LLM/SearchPlan 可能同时给出自然语言 text 和结构化约束。
+        # 这种情况下保留约束，避免泛词查询跨类目召回不相关商品。
+        result = sqlite_product_search_service.search_products(
+            keyword=str(text),
+            brand=args.get("brand"),
+            category=args.get("category"),
+            sub_category=args.get("sub_category"),
+            attr_filters=attr_filters,
+            limit=limit,
+            show_skus=show_skus,
+        )
+        if isinstance(result, dict):
+            result["input_text"] = str(text)
+            result["parsed"] = {
+                "keyword": str(text),
+                "brand": args.get("brand"),
+                "category": args.get("category"),
+                "sub_category": args.get("sub_category"),
+                "attr_filters": attr_filters,
+                "source": "structured_text_filters",
+            }
+        return result
+
     if text:
         # 自然语言入口会自动解析品牌/品类/属性，最适合 LLM 直接传用户需求。
         result = sqlite_product_search_service.search_by_rule_parsed_text(text=str(text), limit=limit, show_skus=show_skus)
@@ -79,7 +139,6 @@ def run_tool(tool_name: str, arguments: Optional[Dict[str, Any]] = None) -> dict
             result["recommendation_hint"] = "未找到直接相关商品，请结合用户意图调整关键词或询问更具体的品类、品牌、预算。"
         return result
 
-    attr_filters = _normalize_attr_filters(args.get("attr_filters"))
     if not any([args.get("keyword"), args.get("brand"), args.get("category"), args.get("sub_category"), attr_filters]):
         # 空参数会让模型看到明确错误，从而下一轮尝试提取关键词，而不是默默返回空结果。
         return {

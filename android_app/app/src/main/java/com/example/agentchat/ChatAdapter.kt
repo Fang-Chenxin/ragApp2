@@ -3,6 +3,7 @@ package com.example.agentchat
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Intent
+import android.content.ActivityNotFoundException
 import android.graphics.BitmapFactory
 import android.net.Uri
 import android.text.SpannableString
@@ -328,9 +329,9 @@ class ChatAdapter(private val messages: MutableList<ChatMessage>) : RecyclerView
             }
 
             if (product.imageUrl.isNotEmpty()) {
-                loadProductImage(product.imageUrl, productImage, imagePlaceholder)
+                loadProductImage(resolveBackendUrl(product.imageUrl), productImage, imagePlaceholder)
             } else if (product.imagePath.isNotEmpty()) {
-                loadProductImage(product.imagePath, productImage, imagePlaceholder)
+                loadProductImage(resolveProductImageUrl(product.imagePath), productImage, imagePlaceholder)
             } else {
                 imagePlaceholder.visibility = View.VISIBLE
                 productImage.visibility = View.GONE
@@ -350,6 +351,11 @@ class ChatAdapter(private val messages: MutableList<ChatMessage>) : RecyclerView
         }
 
         private fun loadProductImage(url: String, imageView: ImageView, placeholder: TextView) {
+            if (url.isBlank()) {
+                showImagePlaceholder(imageView, placeholder)
+                return
+            }
+
             imageLoadExecutor.execute {
                 try {
                     val request = Request.Builder().url(url).build()
@@ -381,14 +387,48 @@ class ChatAdapter(private val messages: MutableList<ChatMessage>) : RecyclerView
         private fun openProductPage(product: SelectedProduct) {
             val context = itemView.context
             val url = when {
-                product.landingUrl.isNotEmpty() -> product.landingUrl
+                product.landingUrl.isNotEmpty() -> resolveBackendUrl(product.landingUrl)
                 product.productId.isNotEmpty() && context is MainActivity ->
                     context.getBackendUrlWithPath("/api/product-search/products/${product.productId}/page")
                 else -> return
             }
 
-            val intent = Intent(Intent.ACTION_VIEW, Uri.parse(url))
-            context.startActivity(intent)
+            try {
+                val intent = Intent(Intent.ACTION_VIEW, Uri.parse(url))
+                context.startActivity(intent)
+            } catch (e: ActivityNotFoundException) {
+                Toast.makeText(context, "未找到可打开商品页的应用", Toast.LENGTH_SHORT).show()
+            } catch (e: Exception) {
+                e.printStackTrace()
+                Toast.makeText(context, "商品页打开失败", Toast.LENGTH_SHORT).show()
+            }
+        }
+
+        private fun resolveProductImageUrl(imagePath: String): String {
+            val cleanPath = imagePath.trim()
+            if (cleanPath.isBlank()) return ""
+            if (cleanPath.startsWith("http://") || cleanPath.startsWith("https://") || cleanPath.startsWith("/")) {
+                return resolveBackendUrl(cleanPath)
+            }
+
+            val encodedPath = Uri.encode(cleanPath, "/")
+            return resolveBackendUrl("/api/product-search/images/$encodedPath")
+        }
+
+        private fun resolveBackendUrl(rawUrl: String): String {
+            val cleanUrl = rawUrl.trim()
+            if (cleanUrl.isBlank()) return ""
+            if (cleanUrl.startsWith("http://") || cleanUrl.startsWith("https://")) {
+                return cleanUrl
+            }
+
+            val context = itemView.context
+            if (context is MainActivity) {
+                val path = if (cleanUrl.startsWith("/")) cleanUrl else "/$cleanUrl"
+                val encodedPath = Uri.encode(path, "/:?&=%")
+                return context.getBackendUrlWithPath(encodedPath)
+            }
+            return cleanUrl
         }
 
     }

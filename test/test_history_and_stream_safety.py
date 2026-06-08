@@ -4,6 +4,7 @@ import asyncio
 import shutil
 import sys
 import tempfile
+import time
 import unittest
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
@@ -17,7 +18,10 @@ sys.path.insert(0, str(BACKEND))
 
 from api.chat import ChatMessage, ChatRequest, chat_endpoint
 from service.history_service import HistoryService
+from service.product_search.query_tool import run_tool
+from service.product_search.sqlite_search import sqlite_product_search_service
 from service.tool_chat_service import ToolChatService
+from service.tool_chat.stream_context import _StreamPipelineContext
 from service.tool_chat.stream_context import _StreamTaskGroup
 from service.tool_chat.stream_pipeline import settings as tool_chat_settings
 
@@ -132,7 +136,99 @@ class ToolPlanningMessagesTest(unittest.TestCase):
         self.assertEqual(messages[2]["content"], "当前问题")
 
 
+class CategoryValidationTest(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        sqlite_product_search_service.initialize()
+        if not sqlite_product_search_service.get_category_tree():
+            raise unittest.SkipTest("SQLite 商品数据库不可用，跳过类目枚举校验测试")
+
+    def test_tool_rejects_unknown_sub_category(self):
+        result = run_tool(
+            "query_products",
+            {
+                "text": "华为生态设备",
+                "category": "数码电子",
+                "sub_category": "智能数码硬件",
+            },
+        )
+
+        self.assertFalse(result.get("ok"))
+        self.assertTrue(result.get("validation_error"))
+        self.assertIn("不在数据库子类目范围内", result.get("error", ""))
+
+    def test_search_plan_clears_unknown_sub_category(self):
+        plan = ToolChatService._normalize_search_plan(
+            {
+                "target_product": "华为生态设备",
+                "target_category": "数码电子",
+                "target_sub_category": "智能数码硬件",
+                "query_text": "华为生态设备",
+                "allowed_categories": ["数码电子"],
+            },
+            "华为生态设备",
+        )
+
+        self.assertIsNotNone(plan)
+        self.assertEqual(plan.get("target_sub_category"), "")
+
+
 class ToolChatStreamPipelineTest(unittest.IsolatedAsyncioTestCase):
+    async def test_final_stage_streams_text_before_product_cards(self):
+        class FakeLLM:
+            connected = True
+            model = "fake"
+
+            async def chat_stream(self, messages, model=None, model_config=None):
+                yield "最终推荐正文"
+
+        service = ToolChatService(vector_store=SimpleNamespace(), llm=FakeLLM())
+        selected_products = [
+            {
+                "rank": 1,
+                "product_id": "p_test_001",
+                "title": "测试办公设备",
+                "brand": "测试品牌",
+                "category": "数码电子",
+                "sub_category": "办公设备",
+                "base_price": 1999,
+                "match_type": "direct",
+            }
+        ]
+
+        def fake_selected_payloads(ctx):
+            return selected_products, ["p_test_001"], [
+                {
+                    "type": "selected_products",
+                    "content": "已选定目标商品",
+                    "selected_product_ids": ["p_test_001"],
+                    "selected_products": selected_products,
+                    "timings": None,
+                }
+            ]
+
+        service._stream_selected_product_payloads = fake_selected_payloads
+        ctx = _StreamPipelineContext(
+            user_query="办公室行政好用设备",
+            conversation_history=[],
+            max_tool_calls=5,
+            model="fake",
+            model_config={"api_key": "test"},
+            timings={},
+            t_total_start=time.perf_counter(),
+            messages=[],
+            tools=[],
+            task_group=_StreamTaskGroup(),
+            final_system_prompt="你是导购助手。",
+        )
+
+        chunks = [chunk async for chunk in service._stream_stage_final_reply(ctx)]
+        content_index = next(i for i, chunk in enumerate(chunks) if chunk.get("type") == "content")
+        products_index = next(i for i, chunk in enumerate(chunks) if chunk.get("type") == "selected_products")
+
+        self.assertLess(content_index, products_index)
+        self.assertIn("商品卡片先放上来", chunks[content_index].get("content", ""))
+
     async def test_pipeline_stream_can_complete_without_tools(self):
         class FakeLLM:
             connected = True

@@ -21,6 +21,25 @@ class ToolChatStreamToolLoopMixin:
         ctx: _StreamPipelineContext,
     ) -> AsyncGenerator[Dict[str, Any], None]:
         """运行多轮“LLM 规划 -> SQLite 工具执行 -> 工具结果回填”的循环。"""
+        preselected_products = self._build_target_products(
+            ctx.direct_selected_products,
+            [],
+            ctx.user_query,
+            search_plan=ctx.search_plan,
+            rag_products=self._extract_products_from_rag_sources(ctx.rag_sources),
+        )
+        if len(preselected_products) >= 3:
+            logger.debug(
+                "      RAG/后台直查已获得 %s 个目标商品，跳过工具循环",
+                len(preselected_products),
+            )
+            yield self._status_chunk(
+                "已找到足够候选，正在整理推荐",
+                "organizing_results",
+                extra={"selected_product_count": len(preselected_products), "tool_loop_skipped": True},
+            )
+            return
+
         for round_idx in range(ctx.max_tool_calls):
             logger.debug("  ── LLM 第 %s 轮调用 ──", round_idx + 1)
             logger.debug("      发送消息数: %s", len(ctx.messages))
@@ -107,25 +126,44 @@ class ToolChatStreamToolLoopMixin:
             assistant_payload: Dict[str, Any] = {"role": "assistant", "content": assistant_message.content}
             if assistant_message.tool_calls:
                 # 将 SDK 对象转成普通 dict，后续可安全 append 到 OpenAI messages。
-                assistant_payload["tool_calls"] = [
-                    {
-                        "id": tc.id,
-                        "type": "function",
-                        "function": {"name": tc.function.name, "arguments": tc.function.arguments},
-                    }
-                    for tc in assistant_message.tool_calls
-                ]
+                normalized_tool_calls = []
+                for tc in assistant_message.tool_calls:
+                    original_arguments = self._parse_tool_arguments(tc.function.arguments or "{}")
+                    enriched_arguments, _ = self._enrich_tool_arguments_with_search_plan(
+                        original_arguments,
+                        ctx.search_plan,
+                    )
+                    normalized_tool_calls.append(
+                        {
+                            "id": tc.id,
+                            "type": "function",
+                            "function": {
+                                "name": tc.function.name,
+                                "arguments": json.dumps(enriched_arguments, ensure_ascii=False),
+                            },
+                        }
+                    )
+                assistant_payload["tool_calls"] = normalized_tool_calls
             ctx.messages.append(assistant_payload)
 
             if assistant_message.tool_calls:
-                planned_tool_calls = [
-                    {
-                        "tool_call_id": tc.id,
-                        "tool_name": tc.function.name,
-                        "arguments": self._parse_tool_arguments(tc.function.arguments or "{}"),
-                    }
-                    for tc in assistant_message.tool_calls
-                ]
+                planned_tool_calls = []
+                for tc in assistant_message.tool_calls:
+                    original_arguments = self._parse_tool_arguments(tc.function.arguments or "{}")
+                    enriched_arguments, enrichment_reasons = self._enrich_tool_arguments_with_search_plan(
+                        original_arguments,
+                        ctx.search_plan,
+                    )
+                    planned_tool_calls.append(
+                        {
+                            "tool_call_id": tc.id,
+                            "tool_name": tc.function.name,
+                            "arguments": enriched_arguments,
+                            "original_arguments": original_arguments,
+                            "argument_enrichment_reasons": enrichment_reasons,
+                            "search_plan_reason": (ctx.search_plan or {}).get("reason") if ctx.search_plan else "",
+                        }
+                    )
                 trace_chunk = self._debug_chunk(
                     "llm_tool_plan",
                     f"LLM 第 {round_idx + 1} 轮工具调用计划",
@@ -153,11 +191,22 @@ class ToolChatStreamToolLoopMixin:
             round_has_empty = False
             tool_tasks: list[asyncio.Task[Dict[str, Any]]] = []
             round_tool_call_order: list[str] = []
+            round_tool_debug: Dict[str, Dict[str, Any]] = {}
             for tc in assistant_message.tool_calls:
                 tool_name = tc.function.name
-                arguments = self._parse_tool_arguments(tc.function.arguments or "{}")
+                original_arguments = self._parse_tool_arguments(tc.function.arguments or "{}")
+                arguments, enrichment_reasons = self._enrich_tool_arguments_with_search_plan(
+                    original_arguments,
+                    ctx.search_plan,
+                )
+                round_tool_debug[tc.id] = {
+                    "original_arguments": original_arguments,
+                    "argument_enrichment_reasons": enrichment_reasons,
+                }
                 logger.debug("         → 工具: %s", tool_name)
                 logger.debug("           参数: %s", json.dumps(arguments, ensure_ascii=False)[:300])
+                if enrichment_reasons:
+                    logger.debug("           参数补全: %s", "；".join(enrichment_reasons))
 
                 has_valid_param = any(arguments.get(k) for k in ["text", "keyword", "brand", "category", "sub_category", "attr_filters"])
                 if not has_valid_param:
@@ -187,6 +236,8 @@ class ToolChatStreamToolLoopMixin:
                     tool_call_id=outcome["tool_call_id"],
                     tool_name=outcome["tool_name"],
                     arguments=outcome.get("arguments") or {},
+                    original_arguments=(round_tool_debug.get(outcome["tool_call_id"]) or {}).get("original_arguments"),
+                    argument_enrichment_reasons=(round_tool_debug.get(outcome["tool_call_id"]) or {}).get("argument_enrichment_reasons"),
                     ok=result_ok,
                     total=result_total,
                     elapsed=outcome.get("elapsed", 0),
@@ -260,12 +311,29 @@ class ToolChatStreamToolLoopMixin:
                 ctx.consecutive_empty_params = 0
 
             round_tool_selected_products = self._extract_selected_products(ctx.tool_results, ctx.tool_call_order)
+            round_rag_selected_products = self._extract_products_from_rag_sources(ctx.rag_sources)
             round_selected_products = self._build_target_products(
                 ctx.direct_selected_products,
                 round_tool_selected_products,
                 ctx.user_query,
                 search_plan=ctx.search_plan,
+                rag_products=round_rag_selected_products,
             )
+            round_result_total = sum(
+                int((ctx.tool_results.get(tool_call_id) or {}).get("total") or 0)
+                for tool_call_id in round_tool_call_order
+            )
+            if round_result_total == 0 and round_selected_products:
+                logger.debug(
+                    "      本轮工具未命中，但已有 %s 个 RAG/直查可核验目标商品，提前进入最终推荐生成",
+                    len(round_selected_products),
+                )
+                yield self._status_chunk(
+                    "已根据知识库候选整理推荐",
+                    "organizing_results",
+                    extra={"selected_product_count": len(round_selected_products), "tool_round_result_total": 0},
+                )
+                break
             if len(round_selected_products) >= 3:
                 # 已有足够可核验商品时提前停止工具循环，避免模型继续泛化查询。
                 logger.debug("      已获得 %s 个目标商品，提前进入最终推荐生成", len(round_selected_products))

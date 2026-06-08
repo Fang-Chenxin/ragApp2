@@ -27,12 +27,14 @@ class SQLiteProductSearchService:
         self.db_path = Path(settings.sqlite_product_db_path).resolve() if getattr(settings, "sqlite_product_db_path", None) else DEFAULT_DB_PATH
         self.ontology_path = DEFAULT_ONTOLOGY_PATH
         self._db_available = False
+        self._category_tree_cache: Optional[Dict[str, List[str]]] = None
 
     def initialize(self):
         """初始化 SQLite 商品搜索服务"""
         try:
             if self.db_path.exists():
                 self._db_available = True
+                self._category_tree_cache = None
                 logger.info(
                     "✅ SQLite 商品搜索服务初始化完成\n"
                     f"   └── 数据库路径: {self.db_path}"
@@ -43,14 +45,75 @@ class SQLiteProductSearchService:
                     "   └── 将使用模拟数据模式"
                 )
                 self._db_available = False
+                self._category_tree_cache = None
         except Exception as e:
             logger.error("❌ SQLite 商品搜索服务初始化失败: %s", e)
             self._db_available = False
+            self._category_tree_cache = None
 
     @property
     def db_available(self) -> bool:
         """检查数据库是否可用"""
         return self._db_available and self.db_path.exists()
+
+    def get_category_tree(self) -> Dict[str, List[str]]:
+        """从数据库读取真实 category -> sub_category 枚举。"""
+        if self._category_tree_cache is not None:
+            return self._category_tree_cache
+        if not self.db_available:
+            self._category_tree_cache = {}
+            return self._category_tree_cache
+
+        conn: Optional[sqlite3.Connection] = None
+        tree: Dict[str, List[str]] = {}
+        try:
+            conn = sqlite3.connect(self.db_path)
+            rows = conn.execute(
+                "SELECT DISTINCT category, sub_category FROM products ORDER BY category, sub_category"
+            ).fetchall()
+            for category, sub_category in rows:
+                category_text = str(category or "").strip()
+                sub_text = str(sub_category or "").strip()
+                if not category_text:
+                    continue
+                tree.setdefault(category_text, [])
+                if sub_text and sub_text not in tree[category_text]:
+                    tree[category_text].append(sub_text)
+        except Exception as e:
+            logger.error("读取商品类目枚举失败: %s", e)
+            tree = {}
+        finally:
+            if conn is not None:
+                conn.close()
+
+        self._category_tree_cache = tree
+        return tree
+
+    def validate_category_filters(
+        self,
+        category: Optional[str] = None,
+        sub_category: Optional[str] = None,
+    ) -> List[str]:
+        """校验结构化类目过滤值是否属于数据库真实枚举。"""
+        tree = self.get_category_tree()
+        if not tree:
+            return []
+
+        errors: List[str] = []
+        category_text = str(category or "").strip()
+        sub_text = str(sub_category or "").strip()
+
+        if category_text and category_text not in tree:
+            errors.append(f"category='{category_text}' 不在数据库类目范围内")
+
+        if sub_text:
+            valid_subs = {sub for subs in tree.values() for sub in subs}
+            if sub_text not in valid_subs:
+                errors.append(f"sub_category='{sub_text}' 不在数据库子类目范围内")
+            elif category_text and category_text in tree and sub_text not in tree[category_text]:
+                errors.append(f"sub_category='{sub_text}' 不属于 category='{category_text}'")
+
+        return errors
 
     def search_by_rule_parsed_text(self, text: str, limit: int = 10, show_skus: bool = False) -> dict[str, Any]:
         """规则解析的自然语言查询接口
@@ -190,6 +253,60 @@ class SQLiteProductSearchService:
             "items": ordered_items,
             "missing_product_ids": [product_id for product_id in clean_ids if product_id not in by_id],
         }
+
+    def get_default_sku_ids_by_product_ids(self, product_ids: List[str]) -> dict[str, str]:
+        """按商品基础价匹配默认 SKU；无同价 SKU 时返回该商品首个 SKU。"""
+        clean_ids: List[str] = []
+        seen: set[str] = set()
+        for product_id in product_ids:
+            value = str(product_id or "").strip()
+            if not value or value in seen:
+                continue
+            seen.add(value)
+            clean_ids.append(value)
+
+        if not clean_ids or not self.db_available:
+            return {}
+
+        placeholders = ",".join(["?"] * len(clean_ids))
+        sql = (
+            "SELECT p.product_id, p.base_price, s.sku_id, s.price "
+            "FROM products p "
+            "JOIN skus s ON s.product_id = p.product_id "
+            f"WHERE p.product_id IN ({placeholders}) "
+            "ORDER BY p.product_id, s.sku_id"
+        )
+        conn: Optional[sqlite3.Connection] = None
+        try:
+            conn = sqlite3.connect(self.db_path)
+            conn.row_factory = sqlite3.Row
+            rows = conn.execute(sql, clean_ids).fetchall()
+        except Exception:
+            traceback.print_exc()
+            return {}
+        finally:
+            if conn is not None:
+                conn.close()
+
+        grouped: dict[str, list[dict[str, Any]]] = {}
+        for row in rows:
+            grouped.setdefault(str(row["product_id"]), []).append(dict(row))
+
+        selected: dict[str, str] = {}
+        for product_id in clean_ids:
+            sku_rows = grouped.get(product_id) or []
+            if not sku_rows:
+                continue
+            matched = None
+            for row in sku_rows:
+                try:
+                    if float(row.get("price")) == float(row.get("base_price")):
+                        matched = row
+                        break
+                except (TypeError, ValueError):
+                    continue
+            selected[product_id] = str((matched or sku_rows[0]).get("sku_id") or "")
+        return selected
 
     def _mock_search_by_rule_parsed_text(self, text: str, limit: int, show_skus: bool) -> dict[str, Any]:
         """模拟自然语言查询结果（当数据库不可用时）"""

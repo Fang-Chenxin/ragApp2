@@ -61,6 +61,7 @@ data class ChatResponse(
 data class SelectedProduct(
     val rank: Int = 0,
     @SerializedName("product_id") val productId: String = "",
+    @SerializedName("sku_id") val skuId: String = "",
     val title: String = "",
     val brand: String = "",
     val category: String = "",
@@ -171,7 +172,9 @@ class MainActivity : AppCompatActivity() {
     }
     
     fun getBackendUrlWithPath(path: String): String {
-        return "${getBackendUrl()}$path"
+        val baseUrl = getBackendUrl().trimEnd('/')
+        val normalizedPath = if (path.startsWith("/")) path else "/$path"
+        return "$baseUrl$normalizedPath"
     }
 
     private fun updateToolbarTitle() {
@@ -1034,11 +1037,11 @@ class MainActivity : AppCompatActivity() {
                                     } else if (hMsg.role == "assistant") {
                                         messages.add(ChatMessage(
                                             "assistant",
-                                            hMsg.content,
+                                            hMsg.content ?: "",
                                             hMsg.thinking,
                                             null,
                                             true,
-                                            selectedProducts = hMsg.selectedProducts
+                                            selectedProducts = hMsg.selectedProducts ?: emptyList()
                                         ))
                                     }
                                 }
@@ -1182,15 +1185,22 @@ class MainActivity : AppCompatActivity() {
                                                 return@runOnUiThread
                                             }
 
-                                            if (streamResponse.status.isNotEmpty()) {
+                                            // null 安防护：Gson 通过 UnsafeAllocator 创建 Kotlin data class，
+                                            // 未出现在 JSON 中的字段会是 null 而非默认值。
+                                            val safeStatus = streamResponse.status ?: ""
+                                            val safeAnalysis = streamResponse.analysis ?: ""
+                                            val safeContent = streamResponse.content ?: ""
+                                            val safeProducts = streamResponse.selectedProducts ?: emptyList()
+
+                                            if (safeStatus.isNotEmpty()) {
                                                 if (streamResponse.phase == "saving_history") {
                                                     Toast.makeText(
                                                         this@MainActivity,
-                                                        streamResponse.status,
+                                                        safeStatus,
                                                         Toast.LENGTH_SHORT
                                                     ).show()
                                                 } else if (fullContent.isEmpty() && assistantMainMessageIndex >= 0) {
-                                                    currentProcessingStatus = streamResponse.status
+                                                    currentProcessingStatus = safeStatus
                                                     val current = messages[assistantMainMessageIndex]
                                                     messages[assistantMainMessageIndex] = current.copy(
                                                         thinking = fullAnalysis.toString().ifEmpty { null },
@@ -1200,8 +1210,8 @@ class MainActivity : AppCompatActivity() {
                                                 }
                                             }
 
-                                            if (streamResponse.analysis.isNotEmpty()) {
-                                                fullAnalysis.append(streamResponse.analysis)
+                                            if (safeAnalysis.isNotEmpty()) {
+                                                fullAnalysis.append(safeAnalysis)
                                                 if (assistantMainMessageIndex >= 0) {
                                                     val current = messages[assistantMainMessageIndex]
                                                     messages[assistantMainMessageIndex] = current.copy(
@@ -1213,9 +1223,9 @@ class MainActivity : AppCompatActivity() {
                                             }
                                             
                                             // 处理正式内容片段
-                                            if (streamResponse.content.isNotEmpty()) {
+                                            if (safeContent.isNotEmpty()) {
                                                 currentProcessingStatus = null
-                                                fullContent.append(streamResponse.content)
+                                                fullContent.append(safeContent)
 
                                                 // 更新助手主消息内容
                                                 if (assistantMainMessageIndex >= 0) {
@@ -1235,9 +1245,9 @@ class MainActivity : AppCompatActivity() {
                                             }
 
                                             // 处理商品推荐
-                                            if (streamResponse.selectedProducts.isNotEmpty()) {
+                                            if (safeProducts.isNotEmpty()) {
                                                 collectedProducts.clear()
-                                                collectedProducts.addAll(streamResponse.selectedProducts)
+                                                collectedProducts.addAll(safeProducts)
                                                 if (assistantMainMessageIndex >= 0) {
                                                     val current = messages[assistantMainMessageIndex]
                                                     messages[assistantMainMessageIndex] = current.copy(
@@ -1261,6 +1271,7 @@ class MainActivity : AppCompatActivity() {
                                                         timings = streamResponse.timings,
                                                         processingStatus = null,
                                                         streaming = false,
+                                                        selectedProducts = if (collectedProducts.isNotEmpty()) collectedProducts.toList() else current.selectedProducts,
                                                     )
                                                     adapter.notifyItemChanged(assistantMainMessageIndex)
                                                 }

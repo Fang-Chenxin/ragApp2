@@ -260,8 +260,19 @@ def _print_chunk(chunk: dict[str, Any]) -> None:
         ti = chunk.get("timings") or {}
         at = ti.get("analysis_calls", 0)
         st["analysis_time"] = at
-        print(f"  耗时: {at}s", flush=True)
-        print(f"  内部需求摘要(不展示给用户): {summary}", flush=True)
+        if at:  # analysis_done 事件才输出耗时
+            print(f"  耗时: {at}s", flush=True)
+            print(f"  内部需求摘要(不展示给用户): {summary}", flush=True)
+        else:
+            # analysis_delta 事件：前 3 条显示片段，后续折叠
+            st["analysis_chunk_count"] = st.get("analysis_chunk_count", 0) + 1
+            cnt = st["analysis_chunk_count"]
+            content_delta = chunk.get("content", "")
+            if cnt <= 3:
+                pv = content_delta.replace("\n", "\\n")[:60]
+                print(f"  [分析片段{cnt}] len={len(content_delta)} → {pv}", flush=True)
+            elif cnt == 4:
+                print(f"  ... (后续分析片段持续流式输出中) ...", flush=True)
 
     # ── rag_sources 事件 ──
     elif chunk_type == "rag_sources":

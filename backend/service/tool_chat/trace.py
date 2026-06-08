@@ -246,6 +246,13 @@ class ToolChatTraceMixin:
                 f"  工具: {chunk.get('tool_name')} 耗时: {chunk.get('elapsed', 0)}s "
                 f"结果: {status} 命中: {chunk.get('total', 0)}条"
             )
+            if chunk.get("original_arguments") is not None and chunk.get("original_arguments") != chunk.get("arguments"):
+                lines.append(f"  原始参数: {chunk.get('original_arguments')}")
+                lines.append(f"  执行参数: {chunk.get('arguments')}")
+            if chunk.get("argument_enrichment_reasons"):
+                lines.append(f"  参数补全原因: {'；'.join(chunk.get('argument_enrichment_reasons') or [])}")
+            if chunk.get("parsed"):
+                lines.append(f"  工具解析: {chunk.get('parsed')}")
             product_ids = chunk.get("product_ids") or []
             if product_ids:
                 lines.append(f"  返回商品ID: {product_ids}")
@@ -257,9 +264,18 @@ class ToolChatTraceMixin:
             if assistant_content:
                 lines.append(f"    LLM内容: {assistant_content[:200]}")
             for call in chunk.get("tool_calls") or []:
-                lines.append(f"    调用 -> {call.get('tool_name')}({call.get('arguments')})")
+                if call.get("original_arguments") != call.get("arguments"):
+                    lines.append(f"    原始调用 -> {call.get('tool_name')}({call.get('original_arguments')})")
+                    lines.append(f"    执行调用 -> {call.get('tool_name')}({call.get('arguments')})")
+                else:
+                    lines.append(f"    调用 -> {call.get('tool_name')}({call.get('arguments')})")
+                if call.get("argument_enrichment_reasons"):
+                    lines.append(f"      参数补全原因: {'；'.join(call.get('argument_enrichment_reasons') or [])}")
+                if call.get("search_plan_reason"):
+                    lines.append(f"      SearchPlan理由: {call.get('search_plan_reason')}")
 
         elif phase == "selected_products":
+            lines.append(f"  RAG候选: {chunk.get('rag_selected_product_ids') or '(无)'}")
             lines.append(f"  原始召回候选: {chunk.get('direct_selected_product_ids') or '(无)'}")
             lines.append(f"  工具召回候选: {chunk.get('tool_selected_product_ids') or '(无)'}")
             lines.append(f"  最终目标商品: {chunk.get('selected_product_ids') or []}")

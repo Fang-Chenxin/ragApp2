@@ -193,5 +193,57 @@
       "must_reply_contains": [],
       "must_not_reply_contains": []
     }
+  },
+  {
+    "id": "office_admin_device",
+    "query": "办公室行政好用设备",
+    "expect": {
+      "must_include_match_type": "any",
+      "allowed_product_ids": [],
+      "forbidden_product_ids": [],
+      "allowed_categories": ["数码电子"],
+      "forbidden_categories": [],
+      "must_reply_contains": [],
+      "must_not_reply_contains": []
+    }
+  },
+  {
+    "id": "compromise_config",
+    "query": "折中配置",
+    "expect": {
+      "must_include_match_type": "any",
+      "allowed_product_ids": [],
+      "forbidden_product_ids": [],
+      "allowed_categories": ["数码电子"],
+      "forbidden_categories": [],
+      "must_reply_contains": [],
+      "must_not_reply_contains": []
+    }
+  },
+  {
+    "id": "large_pack",
+    "query": "大包装",
+    "expect": {
+      "must_include_match_type": "any",
+      "allowed_product_ids": [],
+      "forbidden_product_ids": [],
+      "allowed_categories": [],
+      "forbidden_categories": [],
+      "must_reply_contains": [],
+      "must_not_reply_contains": []
+    }
+  },
+  {
+    "id": "bigger_capacity",
+    "query": "更大容量版本",
+    "expect": {
+      "must_include_match_type": "any",
+      "allowed_product_ids": [],
+      "forbidden_product_ids": [],
+      "allowed_categories": ["数码电子"],
+      "forbidden_categories": [],
+      "must_reply_contains": [],
+      "must_not_reply_contains": []
+    }
   }
 ]

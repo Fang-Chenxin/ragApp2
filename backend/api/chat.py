@@ -415,16 +415,21 @@ async def chat_endpoint(request: ChatRequest):
                     if chunk_type == "status":
                         # status 事件只表示阶段进度，不计入最终回复文本。
                         data = {
+                            "content": "",
+                            "thinking": "",
+                            "analysis": "",
                             "status": chunk.get("content", ""),
                             "phase": chunk.get("phase"),
                             "agent": chunk.get("agent"),
+                            "selected_product_ids": [],
+                            "selected_products": [],
                             "conv_id": current_conv_id,
                             "done": False,
                         }
                         yield f"data: {json.dumps(data, ensure_ascii=False)}\n\n"
 
                     elif chunk_type == "analysis":
-                        # analysis 同时用于前端展示“思考/需求分析”和历史中的 thinking 字段。
+                        # analysis 同时用于前端展示"思考/需求分析"和历史中的 thinking 字段。
                         analysis_content = chunk.get("content", "")
                         summary_content = chunk.get("summary", "")
                         if analysis_content:
@@ -432,8 +437,13 @@ async def chat_endpoint(request: ChatRequest):
                         if summary_content:
                             analysis_summary = summary_content
                         data = {
+                            "content": "",
+                            "thinking": "",
                             "analysis": analysis_content,
                             "summary": summary_content,
+                            "status": "",
+                            "selected_product_ids": [],
+                            "selected_products": [],
                             "conv_id": current_conv_id,
                             "done": False,
                         }
@@ -445,6 +455,9 @@ async def chat_endpoint(request: ChatRequest):
                             collected_products.clear()
                             collected_products.extend(products)
                         data = {
+                            "content": "",
+                            "thinking": "",
+                            "analysis": "",
                             "status": chunk.get("content", ""),
                             "phase": "selected_products",
                             "agent": "shopping_agent",
@@ -457,10 +470,15 @@ async def chat_endpoint(request: ChatRequest):
 
                     elif chunk_type == "rag_sources":
                         data = {
+                            "content": "",
+                            "thinking": "",
+                            "analysis": "",
                             "status": chunk.get("content", ""),
                             "phase": "rag_sources",
                             "agent": "shopping_agent",
                             "rag_sources": chunk.get("rag_sources", []),
+                            "selected_product_ids": [],
+                            "selected_products": [],
                             "conv_id": current_conv_id,
                             "done": False,
                         }
@@ -472,8 +490,13 @@ async def chat_endpoint(request: ChatRequest):
                         full_reply += content
                         data = {
                             "content": content,
+                            "thinking": "",
+                            "analysis": "",
+                            "status": "",
+                            "selected_product_ids": [],
+                            "selected_products": [],
                             "conv_id": current_conv_id,
-                            "done": False
+                            "done": False,
                         }
                         yield f"data: {json.dumps(data, ensure_ascii=False)}\n\n"
 
@@ -496,9 +519,14 @@ async def chat_endpoint(request: ChatRequest):
                             )
 
                         save_status = {
+                            "content": "",
+                            "thinking": "",
+                            "analysis": "",
                             "status": "正在保存历史",
                             "phase": "saving_history",
                             "agent": "shopping_agent",
+                            "selected_product_ids": [],
+                            "selected_products": [],
                             "conv_id": current_conv_id,
                             "done": False,
                         }
@@ -508,10 +536,15 @@ async def chat_endpoint(request: ChatRequest):
 
                         data = {
                             "content": "",
+                            "thinking": "",
+                            "analysis": "",
+                            "status": "",
+                            "selected_product_ids": [],
+                            "selected_products": collected_products if collected_products else [],
                             "conv_id": current_conv_id,
                             "history_saved": history_saved,
                             "timings": timings,
-                            "done": True
+                            "done": True,
                         }
                         yield f"data: {json.dumps(data, ensure_ascii=False)}\n\n"
                         return

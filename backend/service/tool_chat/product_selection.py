@@ -4,6 +4,7 @@ from __future__ import annotations
 import json
 import re
 from typing import Any, Dict, List, Optional
+from urllib.parse import quote
 
 from ..product_search.engine import build_keyword_terms, strip_intent_words
 from ..product_search.query_tool import run_tool
@@ -57,6 +58,9 @@ class ToolChatProductSelectionMixin:
     def _apply_semantic_corrections(plan: Dict[str, Any], user_query: str) -> Dict[str, Any]:
         """用语义表对 LLM 生成的 SearchPlan 做 deterministic 修正。"""
         query = user_query or plan.get("target_product", "")
+        category_tree = sqlite_product_search_service.get_category_tree()
+        valid_categories = set(category_tree.keys())
+        valid_sub_categories = {sub for subs in category_tree.values() for sub in subs}
 
         # 1. 品类别名修正：确保 target_category/target_sub_category 使用库内真实值
         if not plan.get("target_category") or not plan.get("target_sub_category"):
@@ -66,6 +70,28 @@ class ToolChatProductSelectionMixin:
                     plan["target_category"] = resolved["category"]
                 if not plan.get("target_sub_category"):
                     plan["target_sub_category"] = resolved["sub_category"]
+
+        # 1b. 校验 LLM 输出的 category/sub_category 是否为数据库真实枚举，非真实值则清空。
+        # 防止 LLM 输出 "智能数码硬件"、"笔记本电脑、平板电脑" 或 "数码产品" 等伪类目。
+        if valid_categories:
+            current_category = str(plan.get("target_category") or "").strip()
+            if current_category and current_category not in valid_categories:
+                logger.info("[SearchPlan修正] target_category='%s' 非数据库真实值，已清空", current_category)
+                plan["target_category"] = ""
+
+        current_sub = plan.get("target_sub_category", "")
+        if current_sub:
+            target_category = str(plan.get("target_category") or "").strip()
+            if valid_sub_categories and current_sub not in valid_sub_categories:
+                logger.info("[SearchPlan修正] target_sub_category='%s' 非数据库真实值，已清空", current_sub)
+                plan["target_sub_category"] = ""
+            elif target_category and category_tree and current_sub not in category_tree.get(target_category, []):
+                logger.info(
+                    "[SearchPlan修正] target_sub_category='%s' 不属于 target_category='%s'，已清空",
+                    current_sub,
+                    target_category,
+                )
+                plan["target_sub_category"] = ""
 
         # 2. 品牌型号修正：strict_direct 品牌必须包含在 direct_terms 中
         strict_terms = search_semantics_service.get_strict_direct_terms(query)
@@ -102,7 +128,16 @@ class ToolChatProductSelectionMixin:
                 plan["allowed_categories"] = list(semantic_allowed)
 
         # 5. 如果 allowed_categories 明确且只有一个，自动推断 forbidden_categories
-        all_categories = ["美妆护肤", "数码电子", "服饰运动", "食品饮料"]
+        all_categories = list(valid_categories) if valid_categories else ["美妆护肤", "数码电子", "服饰运动", "食品饮料"]
+        if valid_categories:
+            plan["allowed_categories"] = [
+                cat for cat in plan.get("allowed_categories", [])
+                if cat in valid_categories
+            ]
+            plan["forbidden_categories"] = [
+                cat for cat in plan.get("forbidden_categories", [])
+                if cat in valid_categories
+            ]
         allowed = plan.get("allowed_categories", [])
         existing_forbidden = set(plan.get("forbidden_categories", []))
         if allowed and len(allowed) == 1:
@@ -204,6 +239,87 @@ class ToolChatProductSelectionMixin:
         return selected
 
     @staticmethod
+    def _extract_products_from_rag_sources(rag_sources: List[Dict[str, Any]], limit: int = 5) -> List[Dict[str, Any]]:
+        """从 RAG 来源商品中提取可回查的候选摘要。"""
+        selected: List[Dict[str, Any]] = []
+        seen_ids: set[str] = set()
+
+        for item in rag_sources:
+            if not isinstance(item, dict):
+                continue
+            product_id = str(item.get("product_id") or "").strip()
+            if not product_id or product_id in seen_ids:
+                continue
+            seen_ids.add(product_id)
+            selected.append(
+                {
+                    "product_id": product_id,
+                    "title": str(item.get("title") or ""),
+                    "brand": str(item.get("brand") or ""),
+                    "category": str(item.get("category") or ""),
+                    "sub_category": str(item.get("sub_category") or ""),
+                    "base_price": item.get("base_price") or item.get("price"),
+                    "rag_distance": item.get("distance"),
+                    "rag_rerank": item.get("llm_rerank"),
+                }
+            )
+            if len(selected) >= limit:
+                break
+
+        return selected
+
+    @staticmethod
+    def _enrich_tool_arguments_with_search_plan(
+        arguments: Dict[str, Any],
+        search_plan: Optional[Dict[str, Any]],
+    ) -> tuple[Dict[str, Any], List[str]]:
+        """用 SearchPlan 给 LLM 工具参数补确定性约束，并返回补全原因。"""
+        enriched = dict(arguments or {})
+        reasons: List[str] = []
+        if not search_plan:
+            return enriched, reasons
+
+        allowed_categories = [
+            str(item).strip()
+            for item in (search_plan.get("allowed_categories") or [])
+            if str(item).strip()
+        ]
+        if len(allowed_categories) == 1 and not enriched.get("category"):
+            enriched["category"] = allowed_categories[0]
+            reasons.append(f"SearchPlan 限定 allowed_categories={allowed_categories}，自动补 category")
+
+        target_sub_category = ToolChatProductSelectionMixin._single_search_plan_sub_category(search_plan)
+        raw_sub_category = str(search_plan.get("target_sub_category") or "").strip()
+        if target_sub_category and not enriched.get("sub_category"):
+            enriched["sub_category"] = target_sub_category
+            reasons.append(f"SearchPlan 指定 target_sub_category={target_sub_category}，自动补 sub_category")
+        elif raw_sub_category and not target_sub_category:
+            reasons.append(f"SearchPlan.target_sub_category={raw_sub_category} 包含多个或非精确子类目，跳过 sub_category 精确过滤")
+
+        if not enriched.get("text") and not enriched.get("keyword"):
+            query_text = str(search_plan.get("query_text") or "").strip()
+            if query_text:
+                enriched["text"] = query_text
+                reasons.append("工具参数缺少 text/keyword，使用 SearchPlan.query_text 兜底")
+
+        return enriched, reasons
+
+    @staticmethod
+    def _single_search_plan_sub_category(search_plan: Optional[Dict[str, Any]]) -> str:
+        """仅当 SearchPlan 子类目是单个精确值时返回，避免多值字符串误作 SQL 等值过滤。"""
+        if not search_plan:
+            return ""
+        value = str(search_plan.get("target_sub_category") or "").strip()
+        if not value:
+            return ""
+        if re.search(r"[、,，/／|｜;；\s]+", value):
+            return ""
+        category = str(search_plan.get("target_category") or "").strip()
+        if sqlite_product_search_service.validate_category_filters(category=category or None, sub_category=value):
+            return ""
+        return value
+
+    @staticmethod
     def _merge_selected_products(*groups: List[Dict[str, Any]], limit: int = 5) -> List[Dict[str, Any]]:
         """按传入组顺序合并商品，保留首次出现的 product_id。"""
         merged: List[Dict[str, Any]] = []
@@ -227,6 +343,7 @@ class ToolChatProductSelectionMixin:
         tool_products: List[Dict[str, Any]],
         user_query: str = "",
         search_plan: Optional[Dict[str, Any]] = None,
+        rag_products: Optional[List[Dict[str, Any]]] = None,
         limit: int = 5,
     ) -> List[Dict[str, Any]]:
         """生成最终可推荐商品白名单。
@@ -237,8 +354,9 @@ class ToolChatProductSelectionMixin:
         candidates: List[Dict[str, Any]] = []
         candidate_meta: Dict[str, Dict[str, Any]] = {}
 
-        # 工具查询通常更贴近 LLM 规划，优先级高于原始文本直查。
-        for source, group in [("tool_query", tool_products), ("direct_query", direct_products)]:
+        # RAG 已经过向量召回和 LLM rerank，适合作为语义强相关候选；
+        # 工具查询和 SearchPlan 直查继续提供商品库维度的补充。
+        for source, group in [("rag_context", rag_products or []), ("tool_query", tool_products), ("direct_query", direct_products)]:
             for item in group:
                 product_id = str(item.get("product_id") or "").strip()
                 if not product_id or product_id in candidate_meta:
@@ -258,6 +376,7 @@ class ToolChatProductSelectionMixin:
         if not verification.get("ok"):
             logger.warning("目标商品数据库校验失败: %s", verification.get("error"))
             return []
+        default_sku_ids = sqlite_product_search_service.get_default_sku_ids_by_product_ids(product_ids)
 
         targets: List[Dict[str, Any]] = []
         for db_item in verification.get("items") or []:
@@ -267,9 +386,14 @@ class ToolChatProductSelectionMixin:
                 continue
             meta = candidate_meta.get(product_id) or {}
             image_path = str(db_item.get("image_path") or "")
+            sku_id = str(meta.get("sku_id") or db_item.get("sku_id") or default_sku_ids.get(product_id) or "")
+            landing_url = f"/api/product-search/products/{product_id}/page"
+            if sku_id:
+                landing_url = f"{landing_url}?sku_id={quote(sku_id, safe='')}"
             target = {
                 "rank": len(targets) + 1,
                 "product_id": product_id,
+                "sku_id": sku_id,
                 "title": str(db_item.get("title") or ""),
                 "brand": str(db_item.get("brand") or ""),
                 "category": str(db_item.get("category") or ""),
@@ -279,8 +403,8 @@ class ToolChatProductSelectionMixin:
                 "marketing_desc": str(db_item.get("marketing_desc") or "")[:500],
                 "source": str(meta.get("source") or "database"),
                 "recommendation_role": str(meta.get("recommendation_role") or ("primary" if not targets else "supporting")),
-                "image_url": f"/api/product-search/images/{image_path}" if image_path else "",
-                "landing_url": f"/api/product-search/products/{product_id}/page",
+                "image_url": f"/api/product-search/images/{quote(image_path, safe='/')}" if image_path else "",
+                "landing_url": landing_url,
             }
             direct_match = ToolChatProductSelectionMixin._is_direct_product_match(user_query, target, search_plan)
             target["match_type"] = "direct" if direct_match else "fallback"
@@ -289,14 +413,16 @@ class ToolChatProductSelectionMixin:
                 if direct_match
                 else "非直接匹配商品，作为相邻品类或场景替代推荐"
             )
-            if not ToolChatProductSelectionMixin._matches_user_product_constraints(user_query, target, search_plan):
+            rejection_reason = ToolChatProductSelectionMixin._product_constraint_rejection_reason(user_query, target, search_plan)
+            if rejection_reason:
                 logger.info(
-                    "[TargetProductsFilter] query=%s | filtered product_id=%s title=%s category=%s/%s",
+                    "[TargetProductsFilter] query=%s | filtered product_id=%s title=%s category=%s/%s | reason=%s",
                     user_query,
                     product_id,
                     target["title"],
                     target["category"],
                     target["sub_category"],
+                    rejection_reason,
                 )
                 continue
             target["rank"] = len(targets) + 1
@@ -386,6 +512,15 @@ class ToolChatProductSelectionMixin:
         search_plan: Optional[Dict[str, Any]] = None,
     ) -> bool:
         """按用户显式品类约束过滤目标商品，避免泛检索结果混入最终推荐。"""
+        return ToolChatProductSelectionMixin._product_constraint_rejection_reason(user_query, product, search_plan) is None
+
+    @staticmethod
+    def _product_constraint_rejection_reason(
+        user_query: str,
+        product: Dict[str, Any],
+        search_plan: Optional[Dict[str, Any]] = None,
+    ) -> Optional[str]:
+        """返回候选商品被过滤的原因；未过滤返回 None。"""
         query = user_query or ""
         title = str(product.get("title") or "")
         category = str(product.get("category") or "")
@@ -395,15 +530,15 @@ class ToolChatProductSelectionMixin:
         # 语义表兜底：用 fallback_relations 的 forbidden_categories 过滤
         semantic_forbidden = search_semantics_service.get_forbidden_categories(query)
         if semantic_forbidden and category in semantic_forbidden:
-            return False
+            return f"命中语义禁止类目: {category}"
 
         if search_plan:
             allowed_categories = [str(item).strip() for item in (search_plan.get("allowed_categories") or []) if str(item).strip()]
             forbidden_categories = [str(item).strip() for item in (search_plan.get("forbidden_categories") or []) if str(item).strip()]
             if allowed_categories and category not in allowed_categories:
-                return False
+                return f"不在 SearchPlan 允许类目 {allowed_categories} 内"
             if forbidden_categories and category in forbidden_categories:
-                return False
+                return f"命中 SearchPlan 禁止类目 {forbidden_categories}"
 
             fallback_terms = [str(term).strip().lower() for term in (search_plan.get("acceptable_fallback_terms") or []) if str(term).strip()]
             direct_terms = [str(term).strip().lower() for term in (search_plan.get("direct_terms") or []) if str(term).strip()]
@@ -411,7 +546,7 @@ class ToolChatProductSelectionMixin:
             # 仅当没有 allowed_categories 约束时才用 semantic_terms 过滤，
             # 避免 fallback 结果（如唇釉、笔记本电脑）被误杀
             if semantic_terms and not allowed_categories and not any(term in searchable.lower() for term in semantic_terms):
-                return False
+                return f"未命中 direct/fallback 语义词 {semantic_terms}"
 
         beauty_terms = (
             "美妆", "护肤", "彩妆", "防晒", "防晒霜", "口红", "唇釉", "唇膏", "粉底", "眉笔",
@@ -419,14 +554,14 @@ class ToolChatProductSelectionMixin:
             "洗发水", "洗发露", "护发", "沐浴露", "爽肤水", "化妆水",
         )
         if any(term in query for term in beauty_terms) and category != "美妆护肤":
-            return False
+            return "用户显式美妆需求，但候选不是美妆护肤"
 
         digital_terms = (
             "数码", "电子", "手机", "平板", "ipad", "iPad", "电脑", "笔记本", "游戏本",
             "轻薄本", "耳机", "蓝牙", "macbook", "MacBook", "matebook", "MateBook",
         )
         if any(term in query for term in digital_terms) and category != "数码电子":
-            return False
+            return "用户显式数码需求，但候选不是数码电子"
 
         clothing_terms = (
             "服装", "衣服", "衣物", "服饰", "穿搭", "上衣", "T恤", "短袖", "裤", "裙", "连衣裙", "卫衣",
@@ -436,20 +571,22 @@ class ToolChatProductSelectionMixin:
         explicitly_accessory_or_shoe = any(term in query for term in ("帽", "鞋", "包", "背包", "腰包"))
         if explicit_clothing:
             if category != "服饰运动":
-                return False
+                return "用户显式服饰需求，但候选不是服饰运动"
             if not explicitly_accessory_or_shoe and any(term in searchable for term in ("帽", "跑步鞋", "徒步鞋", "鞋")):
-                return False
+                return "用户要服装，候选偏配饰/鞋类"
             garment_terms = ("T恤", "短袖", "上衣", "裤", "裙", "卫衣", "外套", "服装", "衣服", "服饰", "速干")
-            return any(term in searchable for term in garment_terms)
+            if not any(term in searchable for term in garment_terms):
+                return "服饰候选未命中衣物词"
+            return None
 
         food_terms = (
             "食品", "饮料", "零食", "吃的", "喝的", "好吃", "好喝", "甜甜圈", "面包", "肉松",
             "糕点", "点心", "早餐", "代餐", "饼干", "饼", "酸奶", "牛奶", "咖啡", "茶", "方便面",
         )
         if any(term in query for term in food_terms) and category != "食品饮料":
-            return False
+            return "用户显式食品需求，但候选不是食品饮料"
 
-        return True
+        return None
 
     @staticmethod
     def _prefer_closest_fallbacks(
@@ -568,7 +705,15 @@ class ToolChatProductSelectionMixin:
         selected: List[Dict[str, Any]] = []
         seen_ids: set[str] = set()
         for query_text in query_texts:
-            result = run_tool("query_products", {"text": query_text, "limit": max(limit, 10)})
+            arguments: Dict[str, Any] = {"text": query_text, "limit": max(limit, 10)}
+            if search_plan:
+                allowed_categories = [str(item).strip() for item in (search_plan.get("allowed_categories") or []) if str(item).strip()]
+                if len(allowed_categories) == 1:
+                    arguments["category"] = allowed_categories[0]
+                target_sub_category = cls._single_search_plan_sub_category(search_plan)
+                if target_sub_category:
+                    arguments["sub_category"] = target_sub_category
+            result = run_tool("query_products", arguments)
             if not isinstance(result, dict) or not result.get("ok") or result.get("total", 0) <= 0:
                 continue
             for item in cls._extract_products_from_tool_result(result, limit=max(limit, 10)):

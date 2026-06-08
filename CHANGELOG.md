@@ -1,5 +1,41 @@
 # Changelog
 
+## [v1.1.1] - 2026-06-09
+
+### Added
+- ✨ 商品落地页重构为完整展示页，新增 SKU 规格网格选择、FAQ 折叠展示、用户评价列表、滚动位置保持 - [详细文档](docs/变更摘要/导购流程并行化与商品卡片联动优化.md)
+- ✨ 新增 `get_category_tree()` 从数据库读取真实类目枚举，工具 Function Calling schema 动态注入 enum 约束 - [详细文档](docs/变更摘要/导购流程并行化与商品卡片联动优化.md)
+- ✨ 新增 SearchPlan 类目枚举校验，LLM 输出非法 category/sub_category 值时自动清空 - [详细文档](docs/变更摘要/导购流程并行化与商品卡片联动优化.md)
+- ✨ 新增工具参数自动补全机制，用 SearchPlan 给 LLM 工具调用补充 category/text 等参数 - [详细文档](docs/变更摘要/导购流程并行化与商品卡片联动优化.md)
+- ✨ 新增 RAG 已召回商品纳入目标商品候选池（source=rag_context），语义强相关商品优先进入推荐 - [详细文档](docs/变更摘要/导购流程并行化与商品卡片联动优化.md)
+- ✨ 新增目标商品卡片前引导文字，避免用户长时间空白等待 - [详细文档](docs/变更摘要/导购流程并行化与商品卡片联动优化.md)
+- ✨ 新增 LLM 直接回复覆盖检测，已覆盖全部 primary 商品时跳过重新生成 - [详细文档](docs/变更摘要/导购流程并行化与商品卡片联动优化.md)
+- ✨ 新增 `get_default_sku_ids_by_product_ids()` 按基础价匹配默认 SKU - [详细文档](docs/变更摘要/导购流程并行化与商品卡片联动优化.md)
+- ✨ 新增商品图片路径兜底查找，目录名变更时按文件名在 images 目录内匹配 - [详细文档](docs/变更摘要/导购流程并行化与商品卡片联动优化.md)
+- 🧪 新增 CategoryValidationTest 和流式引导文字测试 - [详细文档](docs/变更摘要/导购流程并行化与商品卡片联动优化.md)
+
+### Changed
+- 🔧 Android `getBackendUrlWithPath()` 修复路径分隔符，自动补 `/` 去尾部 `/` - [详细文档](docs/变更摘要/导购流程并行化与商品卡片联动优化.md)
+- 🔧 Android 流式响应增加 null 安全防护（safeStatus/safeAnalysis/safeContent/safeProducts），修复 Gson 反序列化 Kotlin data class 字段为 null 的问题 - [详细文档](docs/变更摘要/导购流程并行化与商品卡片联动优化.md)
+- 🔧 Android 商品图片加载增加空 URL 前置检查，避免无效请求 - [详细文档](docs/变更摘要/导购流程并行化与商品卡片联动优化.md)
+- 🔧 Android 商品页打开增加 ActivityNotFoundException / Exception 异常处理 - [详细文档](docs/变更摘要/导购流程并行化与商品卡片联动优化.md)
+- 🔧 后端 SSE 所有事件新增 content/thinking/analysis/selected_products 空值字段，防止 Android 端反序列化异常 - [详细文档](docs/变更摘要/导购流程并行化与商品卡片联动优化.md)
+- 🔧 工具循环新增 RAG 候选预检，≥3 个目标商品时跳过工具循环 - [详细文档](docs/变更摘要/导购流程并行化与商品卡片联动优化.md)
+- 🔧 `_matches_user_product_constraints()` 重构为 `_product_constraint_rejection_reason()`，返回具体拒绝原因支持调试 - [详细文档](docs/变更摘要/导购流程并行化与商品卡片联动优化.md)
+- 🔧 `item_product_card.xml` 修复 `android:marginEnd` → `android:layout_marginEnd` - [详细文档](docs/变更摘要/导购流程并行化与商品卡片联动优化.md)
+- 📊 语义表扩展：product_concepts.json 新增 6 个商品概念，regression_cases.json 新增 4 条用例 - [详细文档](docs/变更摘要/导购流程并行化与商品卡片联动优化.md)
+
+### Fixed
+- 🛡️ 修复商品落地页无 SKU 规格选择和评价展示的问题 - [详细文档](docs/变更摘要/导购流程并行化与商品卡片联动优化.md)
+- 🛡️ 修复 LLM SearchPlan 输出非法品类值导致查询为空的问题 - [详细文档](docs/变更摘要/导购流程并行化与商品卡片联动优化.md)
+- 🛡️ 修复 LLM 工具调用漏传 category/text 导致空结果的问题 - [详细文档](docs/变更摘要/导购流程并行化与商品卡片联动优化.md)
+- 🛡️ 修复 RAG 已召回商品未参与最终推荐的问题 - [详细文档](docs/变更摘要/导购流程并行化与商品卡片联动优化.md)
+- 🛡️ 修复 Android Kotlin data class 反序列化字段为 null 可能崩溃的问题 - [详细文档](docs/变更摘要/导购流程并行化与商品卡片联动优化.md)
+- 🛡️ 修复商品图片/落地页 URL 相对路径无法拼接后端地址的问题 - [详细文档](docs/变更摘要/导购流程并行化与商品卡片联动优化.md)
+- 🛡️ 修复商品图片路径变更后 404 的问题 - [详细文档](docs/变更摘要/导购流程并行化与商品卡片联动优化.md)
+
+---
+
 ## [v1.1.0] - 2026-06-08
 
 ### Added
