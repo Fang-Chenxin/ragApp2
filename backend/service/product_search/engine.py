@@ -259,19 +259,80 @@ def build_keyword_terms(text: str) -> list[str]:
     # Split on common delimiters first
     parts = re.split(r"[\s,，.。;；:：/\\|\-]+", cleaned)
     parts = [p for p in parts if p]
+    for part in list(parts):
+        mixed_parts = re.findall(r"[A-Za-z][A-Za-z0-9+]*|[\u4e00-\u9fff]+|\d+(?:\.\d+)?", part)
+        parts.extend(mixed_parts)
 
     # For Chinese-only parts with no delimiters, also split into 2-char bigrams
     # so FTS/LIKE can match partial substrings (e.g. "美白润肤" → "美白","润肤")
     sub_parts: list[str] = []
     for part in parts:
         if re.fullmatch(r"[\u4e00-\u9fff]+", part) and len(part) > 2:
-            for i in range(0, len(part) - 1, 2):
+            for i in range(0, len(part) - 1):
                 sub_parts.append(part[i : i + 2])
 
     terms = [cleaned]
     terms.extend(parts)
     terms.extend(sub_parts)
+    expansion_map = {
+        "ipad": ["iPad", "平板", "Apple"],
+        "平板": ["平板电脑", "Pad", "iPad"],
+        "游戏本": ["笔记本", "笔记本电脑", "电脑"],
+        "口红": ["唇釉", "唇膏", "唇部", "彩妆"],
+        "连衣裙": ["裙", "女装", "女士", "瑜伽裤", "裤", "服饰", "服装"],
+    }
+    cleaned_lower = cleaned.lower()
+    for key, values in expansion_map.items():
+        if key.lower() in cleaned_lower:
+            terms.extend(values)
     return unique_preserve_order(terms)
+
+
+def strip_intent_words(text: str) -> str:
+    """移除导购问句里的意图/语气词，避免它们污染商品关键词。"""
+    cleaned = normalize(text)
+    if not cleaned:
+        return ""
+
+    stop_words = (
+        "有没有", "有没", "有没有的", "有吗", "有么", "有没有卖", "有没有推荐",
+        "想买", "想要", "我要", "需要", "推荐", "帮我", "帮忙", "看看", "查查", "找找",
+        "哪款", "哪种", "什么", "适合", "好吃", "好喝", "好用", "不错", "划算",
+        "便宜", "贵吗", "多少钱", "多少价位", "学习用", "学习", "打游戏", "的",
+    )
+    for word in stop_words:
+        cleaned = cleaned.replace(word, " ")
+    return normalize(cleaned)
+
+
+def score_keyword_match(item: dict[str, Any], keyword: str | None) -> int:
+    """给商品按关键词相关性打分，用于 OR 召回后的稳定排序。"""
+    cleaned = strip_intent_words(keyword or "")
+    if not cleaned:
+        return 0
+
+    title = normalize(str(item.get("title") or ""))
+    brand = normalize(str(item.get("brand") or ""))
+    category = normalize(str(item.get("category") or ""))
+    sub_category = normalize(str(item.get("sub_category") or ""))
+    searchable = normalize(" ".join([title, brand, category, sub_category]))
+
+    score = 0
+    if cleaned and cleaned in title:
+        score += 100
+    elif cleaned and cleaned in searchable:
+        score += 60
+
+    terms = [term for term in build_keyword_terms(cleaned) if len(term) >= 2]
+    for term in terms:
+        if term in title:
+            score += 20
+        elif term in sub_category or term in category:
+            score += 12
+        elif term in searchable:
+            score += 4
+
+    return score
 
 
 def build_category_reverse_index(ontology: dict[str, Any]) -> dict[str, str]:
@@ -372,8 +433,8 @@ def extract_query_from_text(text: str, ontology: dict[str, Any]) -> dict[str, An
         key = family_spec.get("keys", [family_name])[0]
         attr_filters.append({"key": key, "value": value})
 
-    # Fallback keyword: 移除已识别出的品牌/品类/属性词，剩余文本作为全文检索关键词。
-    keyword = normalize(text)
+    # Fallback keyword: 移除已识别出的品牌/品类/属性词和导购意图词，剩余文本作为全文检索关键词。
+    keyword = strip_intent_words(text)
     for token in [category or "", brand or ""]:
         if token:
             keyword = keyword.replace(token, " ")
@@ -655,6 +716,8 @@ def agent_search_products(
                 if show_skus:
                     obj["skus"] = fetch_skus(conn, row["product_id"])
                 items.append(obj)
+            if keyword:
+                items.sort(key=lambda obj: (-score_keyword_match(obj, keyword), obj.get("base_price") or 0))
         finally:
             conn.close()
 

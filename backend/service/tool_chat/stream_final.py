@@ -19,7 +19,12 @@ class ToolChatStreamFinalMixin:
     ) -> tuple[List[Dict[str, Any]], list[str], list[Dict[str, Any]]]:
         """合并并校验目标商品，同时生成前端和日志可见的调试 payload。"""
         tool_selected_products = self._extract_selected_products(ctx.tool_results, ctx.tool_call_order)
-        selected_products = self._build_target_products(ctx.direct_selected_products, tool_selected_products, ctx.user_query)
+        selected_products = self._build_target_products(
+            ctx.direct_selected_products,
+            tool_selected_products,
+            ctx.user_query,
+            search_plan=ctx.search_plan,
+        )
         selected_product_ids = [item["product_id"] for item in selected_products]
         trace_chunk = self._debug_chunk(
             "selected_products",
@@ -28,6 +33,7 @@ class ToolChatStreamFinalMixin:
             tool_selected_product_ids=[item["product_id"] for item in tool_selected_products],
             selected_product_ids=selected_product_ids,
             selected_products=selected_products,
+            search_plan=ctx.search_plan,
         )
         self._log_trace_chunk(trace_chunk)
         payloads = [trace_chunk]

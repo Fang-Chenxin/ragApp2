@@ -5,6 +5,7 @@ import json
 import re
 from typing import Any, Dict, List, Optional
 
+from ..product_search.engine import build_keyword_terms, strip_intent_words
 from ..product_search.query_tool import run_tool
 from ..product_search.sqlite_search import sqlite_product_search_service
 from config.logging_config import get_logger
@@ -14,6 +15,59 @@ logger = get_logger("service.tool_chat")
 
 class ToolChatProductSelectionMixin:
     """目标商品提取、合并、校验和对外回复清洗能力。"""
+
+    @staticmethod
+    def _normalize_search_plan(raw_plan: Any, user_query: str = "") -> Optional[Dict[str, Any]]:
+        """标准化 LLM 生成的商品搜索计划；无效时返回 None。"""
+        if not isinstance(raw_plan, dict):
+            return None
+
+        def text_value(key: str) -> str:
+            return str(raw_plan.get(key) or "").strip()
+
+        def list_value(key: str) -> List[str]:
+            value = raw_plan.get(key)
+            if isinstance(value, str):
+                return [value.strip()] if value.strip() else []
+            if isinstance(value, list):
+                return [str(item).strip() for item in value if str(item).strip()]
+            return []
+
+        plan = {
+            "target_product": text_value("target_product") or user_query.strip(),
+            "target_category": text_value("target_category"),
+            "target_sub_category": text_value("target_sub_category"),
+            "query_text": text_value("query_text") or text_value("target_product") or user_query.strip(),
+            "fallback_query_texts": list_value("fallback_query_texts"),
+            "direct_terms": list_value("direct_terms"),
+            "acceptable_fallback_terms": list_value("acceptable_fallback_terms"),
+            "allowed_categories": list_value("allowed_categories"),
+            "forbidden_categories": list_value("forbidden_categories"),
+            "fallback_notice_required": bool(raw_plan.get("fallback_notice_required", True)),
+            "reason": text_value("reason"),
+        }
+        if not plan["direct_terms"] and plan["target_product"]:
+            plan["direct_terms"] = [plan["target_product"]]
+        return plan
+
+    @staticmethod
+    def _parse_search_plan_content(content: str, user_query: str = "") -> Optional[Dict[str, Any]]:
+        """从 LLM 文本中解析 SearchPlan JSON。"""
+        text = (content or "").strip()
+        if not text:
+            return None
+        text = re.sub(r"^```(?:json)?\s*", "", text, flags=re.I)
+        text = re.sub(r"\s*```$", "", text)
+        try:
+            return ToolChatProductSelectionMixin._normalize_search_plan(json.loads(text), user_query)
+        except json.JSONDecodeError:
+            match = re.search(r"\{.*\}", text, flags=re.S)
+            if not match:
+                return None
+            try:
+                return ToolChatProductSelectionMixin._normalize_search_plan(json.loads(match.group(0)), user_query)
+            except json.JSONDecodeError:
+                return None
 
     @staticmethod
     def _extract_selected_products(
@@ -109,6 +163,7 @@ class ToolChatProductSelectionMixin:
         direct_products: List[Dict[str, Any]],
         tool_products: List[Dict[str, Any]],
         user_query: str = "",
+        search_plan: Optional[Dict[str, Any]] = None,
         limit: int = 5,
     ) -> List[Dict[str, Any]]:
         """生成最终可推荐商品白名单。
@@ -161,7 +216,14 @@ class ToolChatProductSelectionMixin:
                 "source": str(meta.get("source") or "database"),
                 "recommendation_role": str(meta.get("recommendation_role") or ("primary" if not targets else "supporting")),
             }
-            if not ToolChatProductSelectionMixin._matches_user_product_constraints(user_query, target):
+            direct_match = ToolChatProductSelectionMixin._is_direct_product_match(user_query, target, search_plan)
+            target["match_type"] = "direct" if direct_match else "fallback"
+            target["match_note"] = (
+                "直接匹配用户要找的商品关键词"
+                if direct_match
+                else "非直接匹配商品，作为相邻品类或场景替代推荐"
+            )
+            if not ToolChatProductSelectionMixin._matches_user_product_constraints(user_query, target, search_plan):
                 logger.info(
                     "[TargetProductsFilter] query=%s | filtered product_id=%s title=%s category=%s/%s",
                     user_query,
@@ -174,10 +236,80 @@ class ToolChatProductSelectionMixin:
             target["rank"] = len(targets) + 1
             targets.append(target)
 
+        direct_targets = [item for item in targets if item.get("match_type") == "direct"]
+        if direct_targets:
+            targets = direct_targets
+            for index, item in enumerate(targets, start=1):
+                item["rank"] = index
+                item["recommendation_role"] = "primary" if index == 1 else "supporting"
+        else:
+            targets = ToolChatProductSelectionMixin._prefer_closest_fallbacks(user_query, targets, search_plan)
+            for index, item in enumerate(targets, start=1):
+                item["rank"] = index
+                item["recommendation_role"] = "fallback_primary" if index == 1 else "fallback_supporting"
+
         return targets
 
     @staticmethod
-    def _matches_user_product_constraints(user_query: str, product: Dict[str, Any]) -> bool:
+    def _is_direct_product_match(
+        user_query: str,
+        product: Dict[str, Any],
+        search_plan: Optional[Dict[str, Any]] = None,
+    ) -> bool:
+        """判断候选是否直接匹配用户点名的商品，而不是宽泛替代品。"""
+        cleaned_query = strip_intent_words(user_query or "")
+        if not cleaned_query:
+            return False
+
+        title = str(product.get("title") or "")
+        category = str(product.get("category") or "")
+        sub_category = str(product.get("sub_category") or "")
+        searchable = f"{title} {category} {sub_category}"
+        searchable_lower = searchable.lower()
+        query_lower = cleaned_query.lower()
+
+        specific_model_tokens = ("ipad", "iphone", "macbook", "airpods", "matebook", "thinkpad", "thinkbook")
+        requested_specific_tokens = [token for token in specific_model_tokens if token in query_lower]
+        if requested_specific_tokens:
+            return any(token in searchable_lower for token in requested_specific_tokens)
+
+        if search_plan:
+            direct_terms = [str(term).strip().lower() for term in (search_plan.get("direct_terms") or []) if str(term).strip()]
+            if direct_terms and any(term in searchable_lower for term in direct_terms):
+                return True
+
+        if cleaned_query in searchable:
+            return True
+
+        strong_tokens = re.findall(r"[A-Za-z][A-Za-z0-9+\\-]*", cleaned_query)
+        if strong_tokens and any(token.lower() in searchable_lower for token in strong_tokens):
+            return True
+
+        direct_aliases = {
+            "平板": ("平板", "pad", "ipad"),
+            "笔记本": ("笔记本", "notebook", "macbook", "matebook", "thinkpad", "thinkbook"),
+            "防晒": ("防晒",),
+            "跑步鞋": ("跑步鞋", "跑鞋"),
+            "肉松饼": ("肉松饼",),
+        }
+        for query_term, aliases in direct_aliases.items():
+            if query_term in query_lower and any(alias.lower() in searchable_lower for alias in aliases):
+                return True
+
+        terms = [term for term in build_keyword_terms(cleaned_query) if len(term) >= 2 and term != cleaned_query]
+        terms = [term for term in terms if term not in {"推荐", "好吃", "好喝", "好用", "便宜", "划算"}]
+        if len(terms) >= 2:
+            return all(term in searchable for term in terms[:3])
+        if len(terms) == 1:
+            return terms[0] in searchable
+        return False
+
+    @staticmethod
+    def _matches_user_product_constraints(
+        user_query: str,
+        product: Dict[str, Any],
+        search_plan: Optional[Dict[str, Any]] = None,
+    ) -> bool:
         """按用户显式品类约束过滤目标商品，避免泛检索结果混入最终推荐。"""
         query = user_query or ""
         title = str(product.get("title") or "")
@@ -185,8 +317,37 @@ class ToolChatProductSelectionMixin:
         sub_category = str(product.get("sub_category") or "")
         searchable = f"{title} {category} {sub_category}"
 
+        if search_plan:
+            allowed_categories = [str(item).strip() for item in (search_plan.get("allowed_categories") or []) if str(item).strip()]
+            forbidden_categories = [str(item).strip() for item in (search_plan.get("forbidden_categories") or []) if str(item).strip()]
+            if allowed_categories and category not in allowed_categories:
+                return False
+            if forbidden_categories and category in forbidden_categories:
+                return False
+
+            fallback_terms = [str(term).strip().lower() for term in (search_plan.get("acceptable_fallback_terms") or []) if str(term).strip()]
+            direct_terms = [str(term).strip().lower() for term in (search_plan.get("direct_terms") or []) if str(term).strip()]
+            semantic_terms = fallback_terms + direct_terms
+            if semantic_terms and not any(term in searchable.lower() for term in semantic_terms):
+                return False
+
+        beauty_terms = (
+            "美妆", "护肤", "彩妆", "防晒", "防晒霜", "口红", "唇釉", "唇膏", "粉底", "眉笔",
+            "蜜粉", "散粉", "卸妆", "洁面", "洗面奶", "面膜", "面霜", "眼霜", "精华",
+            "洗发水", "洗发露", "护发", "沐浴露", "爽肤水", "化妆水",
+        )
+        if any(term in query for term in beauty_terms) and category != "美妆护肤":
+            return False
+
+        digital_terms = (
+            "数码", "电子", "手机", "平板", "ipad", "iPad", "电脑", "笔记本", "游戏本",
+            "轻薄本", "耳机", "蓝牙", "macbook", "MacBook", "matebook", "MateBook",
+        )
+        if any(term in query for term in digital_terms) and category != "数码电子":
+            return False
+
         clothing_terms = (
-            "服装", "衣服", "衣物", "服饰", "穿搭", "上衣", "T恤", "短袖", "裤", "裙", "卫衣",
+            "服装", "衣服", "衣物", "服饰", "穿搭", "上衣", "T恤", "短袖", "裤", "裙", "连衣裙", "卫衣",
             "运动", "训练", "健身", "力量训练", "速干", "透气",
         )
         explicit_clothing = any(term in query for term in clothing_terms)
@@ -199,14 +360,54 @@ class ToolChatProductSelectionMixin:
             garment_terms = ("T恤", "短袖", "上衣", "裤", "裙", "卫衣", "外套", "服装", "衣服", "服饰", "速干")
             return any(term in searchable for term in garment_terms)
 
-        if any(term in query for term in ("美妆", "护肤", "彩妆")) and category != "美妆护肤":
-            return False
-        if any(term in query for term in ("数码", "电子", "手机", "平板", "电脑", "笔记本", "耳机")) and category != "数码电子":
-            return False
-        if any(term in query for term in ("食品", "饮料", "零食", "吃的", "喝的")) and category != "食品饮料":
+        food_terms = (
+            "食品", "饮料", "零食", "吃的", "喝的", "好吃", "好喝", "甜甜圈", "面包", "肉松",
+            "糕点", "点心", "早餐", "代餐", "饼干", "饼", "酸奶", "牛奶", "咖啡", "茶", "方便面",
+        )
+        if any(term in query for term in food_terms) and category != "食品饮料":
             return False
 
         return True
+
+    @staticmethod
+    def _prefer_closest_fallbacks(
+        user_query: str,
+        products: List[Dict[str, Any]],
+        search_plan: Optional[Dict[str, Any]] = None,
+    ) -> List[Dict[str, Any]]:
+        """没有 direct 时，若存在明显更近的替代品，只保留近邻候选。"""
+        if search_plan:
+            fallback_terms = [str(term).strip().lower() for term in (search_plan.get("acceptable_fallback_terms") or []) if str(term).strip()]
+            if fallback_terms:
+                preferred = []
+                for item in products:
+                    searchable = (
+                        f"{item.get('title') or ''} {item.get('category') or ''} {item.get('sub_category') or ''}"
+                    ).lower()
+                    if any(term in searchable for term in fallback_terms):
+                        preferred.append(item)
+                if preferred:
+                    return preferred
+
+        query = user_query or ""
+        preference_groups = [
+            (("口红", "唇膏", "唇彩"), ("口红", "唇釉", "唇膏", "唇部", "彩妆")),
+            (("游戏本",), ("笔记本", "电脑", "macbook", "matebook", "thinkpad", "thinkbook")),
+            (("连衣裙",), ("连衣裙", "半身裙", "裙", "女装", "女士", "瑜伽裤", "裤")),
+        ]
+        for triggers, preferred_terms in preference_groups:
+            if not any(term in query for term in triggers):
+                continue
+            preferred: List[Dict[str, Any]] = []
+            for item in products:
+                searchable = (
+                    f"{item.get('title') or ''} {item.get('category') or ''} {item.get('sub_category') or ''}"
+                ).lower()
+                if any(term.lower() in searchable for term in preferred_terms):
+                    preferred.append(item)
+            if preferred:
+                return preferred
+        return products
 
     @staticmethod
     def _log_target_products(user_query: str, selected_products: List[Dict[str, Any]], stage: str) -> None:
@@ -217,7 +418,7 @@ class ToolChatProductSelectionMixin:
         logger.info("[TargetProducts] stage=%s | query=%s | count=%s", stage, user_query, len(selected_products))
         for item in selected_products:
             logger.info(
-                "[TargetProducts] rank=%s | product_id=%s | title=%s | brand=%s | category=%s/%s | price=%s | source=%s | role=%s",
+                "[TargetProducts] rank=%s | product_id=%s | title=%s | brand=%s | category=%s/%s | price=%s | source=%s | role=%s | match=%s",
                 item.get("rank"),
                 item.get("product_id"),
                 item.get("title"),
@@ -227,6 +428,7 @@ class ToolChatProductSelectionMixin:
                 item.get("base_price"),
                 item.get("source"),
                 item.get("recommendation_role"),
+                item.get("match_type"),
             )
 
     @staticmethod
@@ -235,17 +437,42 @@ class ToolChatProductSelectionMixin:
         return user_query.strip()
 
     @classmethod
-    def _query_direct_selected_products(cls, user_query: str, limit: int = 5) -> List[Dict[str, Any]]:
-        """绕过 LLM 规划，直接用原始问题查商品库作为兜底候选。"""
-        query_text = cls._build_direct_product_query_text(user_query)
-        if not query_text:
+    def _query_direct_selected_products(
+        cls,
+        user_query: str,
+        limit: int = 5,
+        search_plan: Optional[Dict[str, Any]] = None,
+    ) -> List[Dict[str, Any]]:
+        """根据 LLM SearchPlan 召回商品；计划不可用时用原始问题兜底。"""
+        query_texts: List[str] = []
+        if search_plan:
+            for text in [search_plan.get("query_text"), *(search_plan.get("fallback_query_texts") or [])]:
+                clean_text = str(text or "").strip()
+                if clean_text and clean_text not in query_texts:
+                    query_texts.append(clean_text)
+        if not query_texts:
+            query_text = cls._build_direct_product_query_text(user_query)
+            if query_text:
+                query_texts.append(query_text)
+        if not query_texts:
             return []
 
-        result = run_tool("query_products", {"text": query_text, "limit": limit})
-        if not isinstance(result, dict) or not result.get("ok") or result.get("total", 0) <= 0:
-            return []
+        selected: List[Dict[str, Any]] = []
+        seen_ids: set[str] = set()
+        for query_text in query_texts:
+            result = run_tool("query_products", {"text": query_text, "limit": max(limit, 10)})
+            if not isinstance(result, dict) or not result.get("ok") or result.get("total", 0) <= 0:
+                continue
+            for item in cls._extract_products_from_tool_result(result, limit=max(limit, 10)):
+                product_id = str(item.get("product_id") or "").strip()
+                if not product_id or product_id in seen_ids:
+                    continue
+                seen_ids.add(product_id)
+                selected.append(item)
+                if len(selected) >= limit:
+                    return selected
 
-        return cls._extract_products_from_tool_result(result, limit=limit)
+        return selected
 
     @staticmethod
     def _build_deterministic_final_reply(
@@ -257,6 +484,8 @@ class ToolChatProductSelectionMixin:
             return ""
 
         lines = ["我根据商品库里已核验的商品，先给你整理一个稳妥选择："]
+        if selected_products and not any(item.get("match_type") == "direct" for item in selected_products):
+            lines = ["当前商品库里没有查到直接匹配的商品，我先按相邻品类给你整理几个可替代选择："]
         for index, item in enumerate(selected_products[:3], start=1):
             title = item.get("title") or "命中商品"
             brand = item.get("brand") or ""
@@ -312,6 +541,8 @@ class ToolChatProductSelectionMixin:
                     "sub_category": item.get("sub_category"),
                     "base_price": item.get("base_price"),
                     "marketing_desc": item.get("marketing_desc"),
+                    "match_type": item.get("match_type"),
+                    "match_note": item.get("match_note"),
                 }
             )
 
@@ -339,7 +570,16 @@ class ToolChatProductSelectionMixin:
             "3) 不要重复长篇需求分析；4) 推荐要自然、像真人导购；"
             "5) 只能推荐内部目标商品清单中的商品，不要编造或改用清单之外的商品；"
             "6) 商品事实以内部目标商品清单 JSON 和工具结果为准；"
-            "7) product_id、sku_id、source、recommendation_role 是内部核对字段，除非用户明确询问，不要在对外回复里展示。\n\n"
+            "7) 如果清单中所有商品的 match_type 都是 fallback，必须先明确说明当前商品库没有查到直接匹配商品，"
+            "再把这些商品作为相邻品类、搭配场景或替代选择推荐，不能暗示它们就是用户点名的商品；"
+            "8) 描述 fallback 商品时必须尊重商品真实品类：酸奶、牛奶、咖啡、茶饮、气泡水、功能饮料只能说成搭配饮品或补充选择，"
+            "不能说成点心、糕点、面包、甜甜圈，也不能声称它们和用户点名食品口感相近；肉松饼这类点心可以说是风味相邻的替代点心；"
+            "9) 用户要游戏本但只有 fallback 笔记本时，必须说明没有专门游戏本；非游戏本笔记本只能说可做轻度游戏、日常娱乐或一般性能参考，"
+            "不能承诺高配置游戏、大型游戏流畅、专业电竞或重度游戏体验，除非商品标题明确写了游戏本/电竞/独显；"
+            "10) 用户要连衣裙但只有 fallback 服饰时，不能把男款T恤、运动短裤等说成连衣裙替代；只可作为普通服饰搭配参考；"
+            "11) fallback 结尾不要说“这些都是同类商品/点心/直接可选”，只说“可作为搭配或替代参考”；"
+            "12) 如果存在 direct 商品，优先推荐 direct 商品，不要混入 fallback 商品；"
+            "13) product_id、sku_id、source、recommendation_role、match_type、match_note 是内部核对字段，除非用户明确询问，不要在对外回复里展示。\n\n"
             f"需求分析摘要：\n{analysis_text or '（无）'}\n\n"
             f"{selected_context}"
         )

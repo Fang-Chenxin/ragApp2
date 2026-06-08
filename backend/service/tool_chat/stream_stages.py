@@ -19,15 +19,43 @@ class ToolChatStreamStagesMixin:
         self,
         ctx: _StreamPipelineContext,
     ) -> tuple[List[Dict[str, Any]], float, Optional[str]]:
-        """用原始用户问题直接查一次商品库，给最终目标商品提供兜底候选。"""
+        """按 SearchPlan 查一次商品库，给最终目标商品提供兜底候选。"""
         direct_start = time.perf_counter()
         try:
-            products = await asyncio.to_thread(self._query_direct_selected_products, ctx.user_query)
+            products = await asyncio.to_thread(self._query_direct_selected_products, ctx.user_query, search_plan=ctx.search_plan)
             return products, round(time.perf_counter() - direct_start, 3), None
         except Exception as exc:
-            error = f"原始需求直查失败：{type(exc).__name__}: {exc}"
+            error = f"原始需求召回失败：{type(exc).__name__}: {exc}"
             logger.warning(error)
             return [], round(time.perf_counter() - direct_start, 3), error
+
+    async def _stream_run_search_plan(self, ctx: _StreamPipelineContext) -> tuple[Optional[Dict[str, Any]], float, Optional[str]]:
+        """用 LLM 生成商品搜索结构化计划；失败时返回 None，让规则兜底接管。"""
+        plan_start = time.perf_counter()
+        try:
+            messages = self._build_search_plan_messages(ctx.conversation_history, ctx.user_query)
+            content = await self.llm.chat(
+                messages,
+                temperature=0.1,
+                model=ctx.model,
+                model_config=ctx.model_config,
+                max_tokens=420,
+            )
+            plan = self._parse_search_plan_content(content, ctx.user_query)
+            if not plan:
+                return None, round(time.perf_counter() - plan_start, 3), "SearchPlan JSON 解析失败"
+            logger.info(
+                "[SearchPlan] query=%s | target=%s | query_text=%s | direct_terms=%s | fallback_terms=%s | allowed=%s",
+                ctx.user_query,
+                plan.get("target_product"),
+                plan.get("query_text"),
+                plan.get("direct_terms"),
+                plan.get("acceptable_fallback_terms"),
+                plan.get("allowed_categories"),
+            )
+            return plan, round(time.perf_counter() - plan_start, 3), None
+        except Exception as exc:
+            return None, round(time.perf_counter() - plan_start, 3), f"{type(exc).__name__}: {exc}"
 
     async def _stream_run_need_analysis(self, ctx: _StreamPipelineContext) -> tuple[str, float]:
         """流式生成需求分析，并把增量片段写入上下文队列供其他阶段穿插输出。"""
@@ -139,9 +167,9 @@ class ToolChatStreamStagesMixin:
         """启动可并行的后台分支，并向前端发送初始状态。"""
         ctx.parallel_branch_start = time.perf_counter()
         ctx.analysis_task = ctx.task_group.create(self._stream_run_need_analysis(ctx))
+        ctx.search_plan_task = ctx.task_group.create(self._stream_run_search_plan(ctx))
         if settings.tool_chat_parallel_enabled:
-            # 三个分支互不依赖：需求分析用于展示，直查用于兜底，首轮 LLM 用于规划工具。
-            ctx.direct_selected_products_task = ctx.task_group.create(self._stream_query_direct_selected_products(ctx))
+            # 需求分析、搜索计划、首轮 LLM 规划互不依赖；商品召回等 SearchPlan 生成后执行。
             ctx.first_tool_planning_task = ctx.task_group.create(self._stream_first_tool_planning_call(ctx))
 
         yield self._status_chunk("正在分析需求", "need_analysis")
@@ -259,14 +287,34 @@ class ToolChatStreamStagesMixin:
         ctx: _StreamPipelineContext,
     ) -> AsyncGenerator[Dict[str, Any], None]:
         """收集原始需求直查结果并输出 debug 事件。"""
+        if ctx.search_plan_task is not None:
+            ctx.search_plan, ctx.search_plan_elapsed, ctx.search_plan_error = await ctx.search_plan_task
+        elif ctx.search_plan is None:
+            ctx.search_plan, ctx.search_plan_elapsed, ctx.search_plan_error = await self._stream_run_search_plan(ctx)
+
+        ctx.timings["search_plan"] = ctx.search_plan_elapsed
+        if ctx.search_plan_error:
+            ctx.timings["search_plan_error"] = ctx.search_plan_error
+
+        trace_chunk = self._debug_chunk(
+            "search_plan",
+            "LLM 商品搜索计划",
+            query=ctx.user_query,
+            elapsed=ctx.search_plan_elapsed,
+            error=ctx.search_plan_error,
+            search_plan=ctx.search_plan,
+        )
+        self._log_trace_chunk(trace_chunk)
+        yield trace_chunk
+
         if ctx.direct_selected_products_task is not None:
             ctx.direct_selected_products, ctx.direct_query_elapsed, ctx.direct_query_error = await ctx.direct_selected_products_task
         else:
             ctx.direct_selected_products, ctx.direct_query_elapsed, ctx.direct_query_error = await self._stream_query_direct_selected_products(ctx)
         trace_chunk = self._debug_chunk(
             "direct_product_query",
-            "原始需求直查 SQLite 商品库",
-            query=self._build_direct_product_query_text(ctx.user_query),
+            "原始需求召回 SQLite 商品库",
+            query=(ctx.search_plan or {}).get("query_text") or self._build_direct_product_query_text(ctx.user_query),
             elapsed=ctx.direct_query_elapsed,
             error=ctx.direct_query_error,
             selected_product_ids=[item["product_id"] for item in ctx.direct_selected_products],

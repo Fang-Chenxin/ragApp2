@@ -264,6 +264,7 @@ class ToolChatStreamToolLoopMixin:
                 ctx.direct_selected_products,
                 round_tool_selected_products,
                 ctx.user_query,
+                search_plan=ctx.search_plan,
             )
             if len(round_selected_products) >= 3:
                 # 已有足够可核验商品时提前停止工具循环，避免模型继续泛化查询。

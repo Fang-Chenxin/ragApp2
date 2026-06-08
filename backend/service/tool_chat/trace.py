@@ -144,12 +144,15 @@ class ToolChatTraceMixin:
     @staticmethod
     def _format_trace_item(prefix: str, item: Dict[str, Any]) -> str:
         """格式化单条商品/知识片段摘要日志。"""
+        match_type = item.get("match_type")
+        match_part = f" match={match_type}" if match_type else ""
         return (
             f"      {prefix} id={item.get('product_id') or item.get('id')} "
             f"title={item.get('title')} cat={item.get('category')}/"
             f"{item.get('sub_category')} "
             f"score={(item.get('llm_rerank') or {}).get('score', '-')} "
             f"dist={item.get('distance')}"
+            f"{match_part}"
         )
 
     @staticmethod
@@ -217,12 +220,25 @@ class ToolChatTraceMixin:
                     lines.append(content_line)
 
         elif phase == "direct_product_query":
-            lines.append(f"  后台直查耗时: {chunk.get('elapsed', 0)}s")
+            lines.append(f"  后台召回耗时: {chunk.get('elapsed', 0)}s")
             if chunk.get("error"):
                 lines.append(f"  警告: {chunk.get('error')}")
-            lines.append(f"  直查关键词: {chunk.get('query', '')}")
-            lines.append(f"  直接命中: {len(chunk.get('selected_product_ids') or [])} 个商品 -> {chunk.get('selected_product_ids') or []}")
-            lines.extend(cls._format_trace_item("直查结果", item) for item in (chunk.get("selected_products") or [])[:8])
+            lines.append(f"  召回关键词: {chunk.get('query', '')}")
+            lines.append(f"  召回候选: {len(chunk.get('selected_product_ids') or [])} 个商品 -> {chunk.get('selected_product_ids') or []}")
+            lines.extend(cls._format_trace_item("召回结果", item) for item in (chunk.get("selected_products") or [])[:8])
+
+        elif phase == "search_plan":
+            lines.append(f"  计划耗时: {chunk.get('elapsed', 0)}s")
+            if chunk.get("error"):
+                lines.append(f"  警告: {chunk.get('error')}")
+            plan = chunk.get("search_plan") or {}
+            if plan:
+                lines.append(f"  目标商品: {plan.get('target_product')}")
+                lines.append(f"  主检索词: {plan.get('query_text')}")
+                lines.append(f"  直接命中词: {plan.get('direct_terms') or []}")
+                lines.append(f"  可接受替代: {plan.get('acceptable_fallback_terms') or []}")
+                lines.append(f"  允许类目: {plan.get('allowed_categories') or []}")
+                lines.append(f"  禁止类目: {plan.get('forbidden_categories') or []}")
 
         elif phase == "tool_result":
             status = "成功" if chunk.get("ok") else f"失败: {chunk.get('error')}"
@@ -244,9 +260,9 @@ class ToolChatTraceMixin:
                 lines.append(f"    调用 -> {call.get('tool_name')}({call.get('arguments')})")
 
         elif phase == "selected_products":
-            lines.append(f"  直查命中: {chunk.get('direct_selected_product_ids') or '(无)'}")
-            lines.append(f"  工具命中: {chunk.get('tool_selected_product_ids') or '(无)'}")
-            lines.append(f"  合并后: {chunk.get('selected_product_ids') or []}")
+            lines.append(f"  原始召回候选: {chunk.get('direct_selected_product_ids') or '(无)'}")
+            lines.append(f"  工具召回候选: {chunk.get('tool_selected_product_ids') or '(无)'}")
+            lines.append(f"  最终目标商品: {chunk.get('selected_product_ids') or []}")
             lines.extend(cls._format_trace_item("合并结果", item) for item in (chunk.get("selected_products") or [])[:8])
 
         elif phase == "organizing_results":

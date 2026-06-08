@@ -50,6 +50,9 @@ class _StreamPipelineContext:
     context_text: str = ""
     rag_sources: List[Dict[str, Any]] = field(default_factory=list)
     final_system_prompt: str = ""
+    search_plan: Optional[Dict[str, Any]] = None
+    search_plan_elapsed: float = 0.0
+    search_plan_error: Optional[str] = None
     direct_selected_products: List[Dict[str, Any]] = field(default_factory=list)
     direct_query_elapsed: float = 0.0
     direct_query_error: Optional[str] = None
@@ -62,6 +65,7 @@ class _StreamPipelineContext:
     tool_call_order: list[str] = field(default_factory=list)
     parallel_branch_start: float = 0.0
     analysis_task: Optional[asyncio.Task[tuple[str, float]]] = None
+    search_plan_task: Optional[asyncio.Task[tuple[Optional[Dict[str, Any]], float, Optional[str]]]] = None
     direct_selected_products_task: Optional[asyncio.Task[tuple[List[Dict[str, Any]], float, Optional[str]]]] = None
     first_tool_planning_task: Optional[asyncio.Task[tuple[Any, Optional[Exception], float, float]]] = None
     completed: bool = False

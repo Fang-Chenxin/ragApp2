@@ -73,6 +73,50 @@ class ToolChatPromptMixin:
 
         return "；".join(analysis_parts) + "。"
 
+    @staticmethod
+    def _build_search_plan_messages(
+        conversation_history: Optional[List[Dict[str, str]]],
+        user_query: str,
+    ) -> List[Dict[str, str]]:
+        """构造商品搜索结构化计划子任务消息。"""
+        return [
+            {
+                "role": "system",
+                "content": (
+                    "你是导购系统的商品搜索规划器。请把用户需求解析成一个严格 JSON 对象，"
+                    "用于商品数据库检索和 direct/fallback 判定。不要输出 Markdown，不要解释。\n\n"
+                    "可用顶层类目只有：食品饮料、数码电子、美妆护肤、服饰运动。\n"
+                    "direct_terms 表示候选标题/品牌/品类中出现任一词即可视为直接匹配；"
+                    "acceptable_fallback_terms 表示没有 direct 时允许保留的相邻商品词；"
+                    "allowed_categories 用于限制候选商品类目；forbidden_categories 用于排除明显不相关类目。\n\n"
+                    "重要规则：\n"
+                    "1. 如果用户点名具体商品/型号/品类，如 iPad、口红、游戏本、连衣裙、洗发水，direct_terms 必须包含这些核心词。\n"
+                    "2. fallback 可以宽泛但必须相邻，例如口红可接受唇釉/唇膏；游戏本可接受笔记本电脑但不是食品/背包；"
+                    "洗发水可接受洗护/洁面等美妆洗护，不可接受食品；连衣裙可接受女装/女士裤装等服饰，不可接受男款T恤优先。\n"
+                    "3. 如果用户需求属于某个明确领域，allowed_categories 应只包含该领域。\n"
+                    "4. query_text 是第一轮检索文本，应尽量短而商品化；fallback_query_texts 是没有直接命中时的备用检索词。\n\n"
+                    "输出 JSON schema：\n"
+                    "{\n"
+                    "  \"target_product\": \"用户真正要找的商品\",\n"
+                    "  \"target_category\": \"四大类目之一或空字符串\",\n"
+                    "  \"target_sub_category\": \"子类目或空字符串\",\n"
+                    "  \"query_text\": \"主检索词\",\n"
+                    "  \"fallback_query_texts\": [\"备用检索词\"],\n"
+                    "  \"direct_terms\": [\"直接命中词\"],\n"
+                    "  \"acceptable_fallback_terms\": [\"可接受替代词\"],\n"
+                    "  \"allowed_categories\": [\"允许类目\"],\n"
+                    "  \"forbidden_categories\": [\"禁止类目\"],\n"
+                    "  \"fallback_notice_required\": true,\n"
+                    "  \"reason\": \"一句话说明计划\"\n"
+                    "}\n\n"
+                    f"{ToolChatPromptMixin._build_history_context(conversation_history, user_query)}"
+                ),
+            },
+            {
+                "role": "user",
+                "content": f"用户问题：{user_query}\n\n请输出 SearchPlan JSON。",
+            },
+        ]
 
     @staticmethod
     def _build_tool_planning_prompt(conversation_history: Optional[List[Dict[str, str]]], user_query: str) -> str:
