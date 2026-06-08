@@ -368,9 +368,10 @@ async def chat_endpoint(request: ChatRequest):
             analysis_summary = ""
             timings = None
             history_saved = False
+            collected_products = []
 
             def save_history_once() -> bool:
-                """保存本轮用户问题、助手回复和需求分析；保证最多执行一次。"""
+                """保存本轮用户问题、助手回复、需求分析和商品清单；保证最多执行一次。"""
                 nonlocal history_saved
                 if history_saved or not full_reply.strip():
                     return history_saved
@@ -378,11 +379,12 @@ async def chat_endpoint(request: ChatRequest):
                 try:
                     thinking_to_save = full_analysis.strip() or analysis_summary.strip() or None
                     logger.info(
-                        "[ThinkingSave] user=%s | full_analysis_len=%d | summary_len=%d | thinking_to_save=%s",
+                        "[ThinkingSave] user=%s | full_analysis_len=%d | summary_len=%d | thinking_to_save=%s | products_count=%d",
                         request.user_id,
                         len(full_analysis),
                         len(analysis_summary),
                         "有" if thinking_to_save else "无",
+                        len(collected_products),
                     )
                     history_service.save_message(request.user_id, current_conv_id, "user", request.user_query)
                     history_service.save_message(
@@ -391,6 +393,7 @@ async def chat_endpoint(request: ChatRequest):
                         "assistant",
                         full_reply,
                         thinking=thinking_to_save,
+                        selected_products=collected_products if collected_products else None,
                     )
                     if thinking_to_save:
                         logger.debug("分析完整内容:\n%s", thinking_to_save)
@@ -437,6 +440,10 @@ async def chat_endpoint(request: ChatRequest):
                         yield f"data: {json.dumps(data, ensure_ascii=False)}\n\n"
 
                     elif chunk_type == "selected_products":
+                        products = chunk.get("selected_products", [])
+                        if products:
+                            collected_products.clear()
+                            collected_products.extend(products)
                         data = {
                             "status": chunk.get("content", ""),
                             "phase": "selected_products",
