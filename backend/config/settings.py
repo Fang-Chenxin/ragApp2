@@ -1,6 +1,7 @@
 """配置管理模块"""
 import os
 from pathlib import Path
+from pydantic import Field
 from pydantic_settings import BaseSettings
 from typing import Any, Optional
 
@@ -213,7 +214,7 @@ class Settings(BaseSettings):
 
     # 服务器配置
     server_host: str = "0.0.0.0"
-    server_port: int = 8000
+    server_port: int = Field(default=8000, ge=1, le=65535)
 
     # CORS 配置
     cors_origins: list[str] = ["*"]  # 生产环境应限制为特定域名

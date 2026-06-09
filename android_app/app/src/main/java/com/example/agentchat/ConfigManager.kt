@@ -3,6 +3,7 @@ package com.example.agentchat
 import android.content.Context
 import com.google.gson.Gson
 import com.google.gson.reflect.TypeToken
+import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 
 data class LocalModelConfig(
     val id: String,
@@ -24,18 +25,76 @@ object ConfigManager {
     private val gson = Gson()
 
     fun getBackendUrl(context: Context): String {
-        if (cachedUrl != null) {
+        if (cachedUrl != null && isValidBackendUrl(cachedUrl!!)) {
             return cachedUrl!!
         }
         val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
-        cachedUrl = prefs.getString(KEY_BACKEND_URL, DEFAULT_BACKEND_URL) ?: DEFAULT_BACKEND_URL
+        val savedUrl = prefs.getString(KEY_BACKEND_URL, DEFAULT_BACKEND_URL) ?: DEFAULT_BACKEND_URL
+        cachedUrl = if (isValidBackendUrl(savedUrl)) {
+            savedUrl
+        } else {
+            prefs.edit().putString(KEY_BACKEND_URL, DEFAULT_BACKEND_URL).apply()
+            DEFAULT_BACKEND_URL
+        }
         return cachedUrl!!
     }
 
     fun setBackendUrl(context: Context, url: String) {
-        cachedUrl = url
+        val cleanUrl = normalizeBackendUrl(url)
+        if (!isValidBackendUrl(cleanUrl)) {
+            return
+        }
+        cachedUrl = cleanUrl
         val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
-        prefs.edit().putString(KEY_BACKEND_URL, url).apply()
+        prefs.edit().putString(KEY_BACKEND_URL, cleanUrl).apply()
+    }
+
+    fun isValidBackendUrl(url: String): Boolean {
+        val cleanUrl = normalizeBackendUrl(url)
+        if (!cleanUrl.startsWith("http://") && !cleanUrl.startsWith("https://")) {
+            return false
+        }
+
+        val parsed = cleanUrl.toHttpUrlOrNull() ?: return false
+        if (parsed.host.isBlank()) {
+            return false
+        }
+        if (parsed.port !in 1..65535) {
+            return false
+        }
+        return isValidHost(parsed.host)
+    }
+
+    fun normalizeBackendUrl(url: String): String {
+        return url.trim()
+            .replace('。', '.')
+            .replace('．', '.')
+            .replace('：', ':')
+    }
+
+    private fun isValidHost(host: String): Boolean {
+        val cleanHost = host.trim()
+        if (cleanHost.isBlank() || cleanHost.contains(' ')) {
+            return false
+        }
+
+        if (cleanHost == "localhost") {
+            return true
+        }
+
+        if (cleanHost.any { it.code !in 33..126 }) {
+            return false
+        }
+
+        val ipv4 = Regex("""^\d{1,3}(?:\.\d{1,3}){3}$""")
+        if (ipv4.matches(cleanHost)) {
+            return cleanHost.split(".").all {
+                it.toIntOrNull()?.let { value -> value in 0..255 } == true
+            }
+        }
+
+        val domain = Regex("""^(?=.{1,253}$)(?:[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?\.)+[A-Za-z](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?$""")
+        return domain.matches(cleanHost)
     }
 
     fun getSelectedModel(context: Context): String? {

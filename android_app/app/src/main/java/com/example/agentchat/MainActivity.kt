@@ -7,7 +7,9 @@ import android.net.ConnectivityManager
 import android.net.NetworkCapabilities
 import android.os.Build
 import android.os.Bundle
+import android.text.Editable
 import android.text.InputType
+import android.text.TextWatcher
 import android.util.Log
 import android.graphics.Typeface
 import android.view.Menu
@@ -293,19 +295,41 @@ class MainActivity : AppCompatActivity() {
     private fun showServerConfigDialog() {
         val editText = EditText(this).apply {
             hint = "例如: http://192.168.1.106:8000"
+            inputType = InputType.TYPE_CLASS_TEXT or
+                    InputType.TYPE_TEXT_VARIATION_URI or
+                    InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS
             setText(getBackendUrl())
             setPadding(48, 32, 48, 32)
         }
+        editText.addTextChangedListener(object : TextWatcher {
+            private var normalizing = false
+
+            override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) = Unit
+
+            override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) = Unit
+
+            override fun afterTextChanged(s: Editable?) {
+                if (normalizing || s == null) return
+
+                val normalized = ConfigManager.normalizeBackendUrl(s.toString())
+                if (normalized != s.toString()) {
+                    normalizing = true
+                    editText.setText(normalized)
+                    editText.setSelection(normalized.length)
+                    normalizing = false
+                }
+            }
+        })
         
         val dialog = AlertDialog.Builder(this)
             .setTitle("服务器地址设置")
             .setMessage("请输入后端服务器的地址")
             .setView(editText)
             .setPositiveButton("保存") { _, _ ->
-                val url = editText.text.toString().trim()
+                val url = ConfigManager.normalizeBackendUrl(editText.text.toString())
                 if (url.isNotEmpty()) {
-                    if (!url.startsWith("http://") && !url.startsWith("https://")) {
-                        Toast.makeText(this, "URL必须以http://或https://开头", Toast.LENGTH_SHORT).show()
+                    if (!ConfigManager.isValidBackendUrl(url)) {
+                        Toast.makeText(this, "URL格式无效，请输入完整地址，例如 http://10.0.2.2:8000", Toast.LENGTH_SHORT).show()
                         return@setPositiveButton
                     }
                     ConfigManager.setBackendUrl(this, url)
