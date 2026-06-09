@@ -25,14 +25,14 @@
   - 优化模型配置解析逻辑
   - 增强连接池管理
 
-### 3. 商品搜索服务优化 (`backend/service/sqlite_product_search_service.py`)
+### 3. 商品搜索服务优化 (`backend/service/product_search/sqlite_search.py`)
 
 - **优化内容**:
   - 改进数据库可用性检查
   - 优化查询结果格式化
   - 增强错误处理和降级策略
 
-### 4. 商品查询工具优化 (`backend/service/sqlite_product_query_tool.py`)
+### 4. 商品查询工具优化 (`backend/service/product_search/query_tool.py`)
 
 - **优化内容**:
   - 改进工具参数定义

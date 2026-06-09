@@ -88,9 +88,9 @@
 ---
 
 ## 参考文件
-- [backend/service/tool_chat/prompts.py](backend/service/tool_chat/prompts.py)
-- [backend/service/tool_chat/product_selection.py](backend/service/tool_chat/product_selection.py)
-- [backend/service/product_search/engine.py](backend/service/product_search/engine.py)
-- [backend/service/tool_chat/stream_stages.py](backend/service/tool_chat/stream_stages.py)
-- [backend/config/settings.py](backend/config/settings.py)
-- [backend/service/tool_chat/trace.py](backend/service/tool_chat/trace.py)
+- [backend/service/tool_chat/prompts.py](../../backend/service/tool_chat/prompts.py)
+- [backend/service/tool_chat/product_selection.py](../../backend/service/tool_chat/product_selection.py)
+- [backend/service/product_search/engine.py](../../backend/service/product_search/engine.py)
+- [backend/service/tool_chat/stream_stages.py](../../backend/service/tool_chat/stream_stages.py)
+- [backend/config/settings.py](../../backend/config/settings.py)
+- [backend/service/tool_chat/trace.py](../../backend/service/tool_chat/trace.py)
