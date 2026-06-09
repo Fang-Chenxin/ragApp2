@@ -1,5 +1,6 @@
 # Python
 venv/
+.venv/
 __pycache__/
 *.py[cod]
 *$py.class
@@ -54,4 +55,4 @@ ecommerce_agent_dataset/ecommerce.db
 ecommerce_agent_dataset/1_美妆护肤/
 ecommerce_agent_dataset/2_数码电子/
 ecommerce_agent_dataset/3_服饰运动/
-ecommerce_agent_dataset/4_食品饮料/
+ecommerce_agent_dataset/4_食品生活/

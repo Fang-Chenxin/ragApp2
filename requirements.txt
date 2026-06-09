@@ -1,2 +1,16 @@
-kivy>=2.3.0
-buildozer>=1.5.0
+# Unified Python dependencies for the FastAPI backend, dataset builders, and
+# local smoke-test scripts. Keep this list to direct project dependencies only;
+# do not paste a full pip freeze from the local venv.
+#
+# Python: 3.10.x
+
+chromadb==1.5.9
+fastapi==0.136.3
+httpx==0.28.1
+openai==2.38.0
+pydantic==2.13.4
+pydantic-settings==2.14.1
+python-dotenv==1.2.2
+python-multipart==0.0.29
+requests==2.34.2
+uvicorn[standard]==0.48.0

@@ -21,7 +21,6 @@
 │   │   ├── rag_service.py   # RAG 检索服务
 │   │   └── history_service.py # 对话历史服务
 │   ├── main.py              # 后端主入口
-│   ├── requirements.txt     # Python 依赖
 │   ├── .env.example         # 环境变量模板
 │   └── test_api.sh          # API 测试脚本
 ├── android_app/             # Kotlin Android 原生应用
@@ -45,9 +44,13 @@
 ```
 
 ## 快速启动后端
+推荐使用 Python 3.10.x。
+
 ```bash
-cd backend
+python3.10 -m venv .venv
+source .venv/bin/activate
 pip install -r requirements.txt
+cd backend
 export LLM_API_KEY="您的 API Key"
 python main.py
 ```
