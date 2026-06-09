@@ -235,13 +235,27 @@ class ToolChatTraceMixin:
             if plan:
                 lines.append(f"  目标商品: {plan.get('target_product')}")
                 lines.append(f"  主检索词: {plan.get('query_text')}")
+                if plan.get("fallback_query_texts"):
+                    lines.append(f"  备用检索词: {plan.get('fallback_query_texts') or []}")
                 lines.append(f"  直接命中词: {plan.get('direct_terms') or []}")
                 lines.append(f"  可接受替代: {plan.get('acceptable_fallback_terms') or []}")
                 lines.append(f"  允许类目: {plan.get('allowed_categories') or []}")
                 lines.append(f"  禁止类目: {plan.get('forbidden_categories') or []}")
+                lines.append(f"  是否追问: {bool(plan.get('is_followup'))}")
+                if plan.get("context_carryover"):
+                    lines.append(f"  历史承接: {plan.get('context_carryover')}")
+                lines.append(f"  排除品牌: {plan.get('excluded_brands') or []}")
+                lines.append(f"  排除关键词: {plan.get('excluded_terms') or []}")
+                lines.append(f"  排除属性: {plan.get('excluded_attributes') or []}")
+                lines.append(f"  对比意图: {bool(plan.get('comparison_intent'))}")
+                if plan.get("comparison_dimensions"):
+                    lines.append(f"  对比维度: {plan.get('comparison_dimensions') or []}")
+                lines.append(f"  价格偏好: {plan.get('price_preference') or '(无)'}")
                 lines.append(f"  购买意图: {plan.get('purchase_intent') or chunk.get('purchase_intent') or 'purchase_ready'}")
                 if plan.get("purchase_intent_reason") or chunk.get("purchase_intent_reason"):
                     lines.append(f"  判断依据: {plan.get('purchase_intent_reason') or chunk.get('purchase_intent_reason')}")
+                if plan.get("reason"):
+                    lines.append(f"  计划理由: {plan.get('reason')}")
 
         elif phase == "tool_result":
             status = "成功" if chunk.get("ok") else f"失败: {chunk.get('error')}"
@@ -278,10 +292,20 @@ class ToolChatTraceMixin:
                     lines.append(f"      SearchPlan理由: {call.get('search_plan_reason')}")
 
         elif phase == "selected_products":
+            plan = chunk.get("search_plan") or {}
             if chunk.get("purchase_intent"):
                 lines.append(f"  购买意图: {chunk.get('purchase_intent')}")
             if chunk.get("purchase_intent_reason"):
                 lines.append(f"  判断依据: {chunk.get('purchase_intent_reason')}")
+            if plan:
+                lines.append(
+                    "  本轮约束: "
+                    f"追问={bool(plan.get('is_followup'))}, "
+                    f"排除品牌={plan.get('excluded_brands') or []}, "
+                    f"排除词={plan.get('excluded_terms') or []}, "
+                    f"对比={bool(plan.get('comparison_intent'))}, "
+                    f"价格偏好={plan.get('price_preference') or '(无)'}"
+                )
             lines.append(f"  RAG候选: {chunk.get('rag_selected_product_ids') or '(无)'}")
             lines.append(f"  原始召回候选: {chunk.get('direct_selected_product_ids') or '(无)'}")
             lines.append(f"  工具召回候选: {chunk.get('tool_selected_product_ids') or '(无)'}")
@@ -291,6 +315,16 @@ class ToolChatTraceMixin:
         elif phase == "organizing_results":
             lines.append(f"  回复模式: {chunk.get('mode') or 'final'}")
             lines.append(f"  目标商品: {chunk.get('selected_product_ids') or []}")
+            if chunk.get("reply_covers_targets") is not None:
+                lines.append(f"  覆盖目标商品: {chunk.get('reply_covers_targets')}")
+            if chunk.get("mentioned_non_whitelisted_product_ids"):
+                lines.append(f"  非白名单提及: {chunk.get('mentioned_non_whitelisted_product_ids')}")
+            if chunk.get("comparison_intent") is not None:
+                lines.append(f"  对比意图: {chunk.get('comparison_intent')}")
+            if chunk.get("comparison_requires_constrained_final") is not None:
+                lines.append(f"  对比需求需结构化回复: {chunk.get('comparison_requires_constrained_final')}")
+            if chunk.get("needs_constrained_final") is not None:
+                lines.append(f"  需要受约束重写: {chunk.get('needs_constrained_final')}")
             if chunk.get("final_message_count") is not None:
                 lines.append(f"  最终消息数: {chunk.get('final_message_count')}")
 

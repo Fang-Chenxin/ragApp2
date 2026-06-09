@@ -58,6 +58,31 @@ def load_regression_cases() -> list[dict]:
                 "query": "推荐一款防晒霜",
                 "expect": {"purchase_intent": "purchase_ready"},
             },
+            {
+                "id": "followup_cheaper",
+                "query": "再便宜点的呢？",
+                "expect": {"price_preference": "cheaper", "is_followup": True},
+            },
+            {
+                "id": "exclude_nike_running",
+                "query": "除了耐克还有什么跑步鞋",
+                "expect": {"excluded_brands": ["Nike"]},
+            },
+            {
+                "id": "exclude_alcohol_sunscreen",
+                "query": "不要含酒精的防晒",
+                "expect": {"excluded_terms": ["酒精"], "allowed_categories": ["美妆护肤"]},
+            },
+            {
+                "id": "comparison_two_sunscreens",
+                "query": "对比这两款防晒，重点看价格和成分",
+                "expect": {"comparison_intent": True, "comparison_dimensions": ["价格", "成分"]},
+            },
+            {
+                "id": "comparison_best_value_instant_noodles",
+                "query": "方便面买哪一种更划算",
+                "expect": {"comparison_intent": True, "price_preference": "cheaper", "allowed_categories": ["食品饮料"]},
+            },
         ]
     )
     return cases
@@ -118,6 +143,33 @@ def check_case(case: dict, verbose: bool = False) -> dict:
     expected_intent = expect.get("purchase_intent")
     if expected_intent and plan and plan.get("purchase_intent") != expected_intent:
         errors.append(f"purchase_intent 期望 '{expected_intent}'，实际 '{plan.get('purchase_intent')}'")
+    expected_price_preference = expect.get("price_preference")
+    if expected_price_preference and plan and plan.get("price_preference") != expected_price_preference:
+        errors.append(f"price_preference 期望 '{expected_price_preference}'，实际 '{plan.get('price_preference')}'")
+    expected_is_followup = expect.get("is_followup")
+    if expected_is_followup is not None and plan and bool(plan.get("is_followup")) != bool(expected_is_followup):
+        errors.append(f"is_followup 期望 '{expected_is_followup}'，实际 '{plan.get('is_followup')}'")
+    expected_excluded_brands = expect.get("excluded_brands", [])
+    if expected_excluded_brands and plan:
+        actual = set(plan.get("excluded_brands", []))
+        for brand in expected_excluded_brands:
+            if brand not in actual:
+                errors.append(f"excluded_brands 缺少 '{brand}' (actual={actual})")
+    expected_excluded_terms = expect.get("excluded_terms", [])
+    if expected_excluded_terms and plan:
+        actual = set(plan.get("excluded_terms", []))
+        for term in expected_excluded_terms:
+            if term not in actual:
+                errors.append(f"excluded_terms 缺少 '{term}' (actual={actual})")
+    expected_comparison = expect.get("comparison_intent")
+    if expected_comparison is not None and plan and bool(plan.get("comparison_intent")) != bool(expected_comparison):
+        errors.append(f"comparison_intent 期望 '{expected_comparison}'，实际 '{plan.get('comparison_intent')}'")
+    expected_dimensions = expect.get("comparison_dimensions", [])
+    if expected_dimensions and plan:
+        actual = set(plan.get("comparison_dimensions", []))
+        for dimension in expected_dimensions:
+            if dimension not in actual:
+                errors.append(f"comparison_dimensions 缺少 '{dimension}' (actual={actual})")
 
     # 3. 检查 forbidden_categories 约束
     expected_forbidden = expect.get("forbidden_categories", [])

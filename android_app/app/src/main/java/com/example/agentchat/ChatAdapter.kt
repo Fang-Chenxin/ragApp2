@@ -4,12 +4,17 @@ import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Intent
 import android.content.ActivityNotFoundException
+import android.content.Context
+import android.graphics.Color
 import android.graphics.BitmapFactory
+import android.graphics.Typeface
+import android.graphics.drawable.GradientDrawable
 import android.net.Uri
 import android.text.SpannableString
 import android.text.Spanned
 import android.text.style.ClickableSpan
 import android.text.style.URLSpan
+import android.util.TypedValue
 import android.widget.Toast
 import android.view.LayoutInflater
 import android.view.View
@@ -20,6 +25,7 @@ import android.widget.TextView
 import android.widget.HorizontalScrollView
 import androidx.recyclerview.widget.RecyclerView
 import io.noties.markwon.Markwon
+import io.noties.markwon.ext.tables.TablePlugin
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import java.util.concurrent.Executors
@@ -30,6 +36,21 @@ private fun TextView.keepSelectable() {
     isLongClickable = true
     linksClickable = false
 }
+
+private data class MarkdownTable(
+    val headers: List<String>,
+    val rows: List<List<String>>,
+    val before: String,
+    val after: String,
+)
+
+private data class ProductComparison(
+    val index: Int,
+    val name: String,
+    val fields: List<Pair<String, String>>,
+    val conclusion: String,
+    val rankScore: Int,
+)
 
 class ChatAdapter(private val messages: MutableList<ChatMessage>) : RecyclerView.Adapter<RecyclerView.ViewHolder>() {
 
@@ -51,6 +72,12 @@ class ChatAdapter(private val messages: MutableList<ChatMessage>) : RecyclerView
                 okHttpClient = OkHttpClient()
             }
             return okHttpClient!!
+        }
+
+        fun createMarkwon(context: Context): Markwon {
+            return Markwon.builder(context)
+                .usePlugin(TablePlugin.create(context))
+                .build()
         }
     }
 
@@ -119,7 +146,9 @@ class ChatAdapter(private val messages: MutableList<ChatMessage>) : RecyclerView
     }
 
     inner class AssistantMessageViewHolder(itemView: View) : RecyclerView.ViewHolder(itemView) {
+        private val messageScroll: HorizontalScrollView = itemView.findViewById(R.id.assistantMessageScroll)
         private val textView: TextView = itemView.findViewById(R.id.assistantMessageText)
+        private val structuredContent: LinearLayout = itemView.findViewById(R.id.assistantStructuredContent)
         private val timingsText: TextView = itemView.findViewById(R.id.assistantTimingsText)
         private val analysisContainer: View = itemView.findViewById(R.id.analysisContainer)
         private val analysisHeaderRow: View = itemView.findViewById(R.id.analysisHeaderRow)
@@ -146,13 +175,16 @@ class ChatAdapter(private val messages: MutableList<ChatMessage>) : RecyclerView
             selectedProducts: List<SelectedProduct> = emptyList(),
         ) {
             if (content.isNotBlank()) {
-                textView.visibility = View.VISIBLE
                 if (streaming) {
+                    structuredContent.visibility = View.GONE
                     bindStreamingContent(content)
                 } else {
-                    renderMarkdown(textView, content)
+                    bindFinalContent(content)
                 }
             } else {
+                messageScroll.visibility = View.GONE
+                structuredContent.visibility = View.GONE
+                structuredContent.removeAllViews()
                 textView.visibility = View.GONE
                 textView.text = ""
                 textView.keepSelectable()
@@ -214,11 +246,15 @@ class ChatAdapter(private val messages: MutableList<ChatMessage>) : RecyclerView
 
         fun bindStreamingContent(content: String) {
             if (content.isNotBlank()) {
+                structuredContent.visibility = View.GONE
+                messageScroll.visibility = View.VISIBLE
                 textView.visibility = View.VISIBLE
+                configureWideTableTextWidth(content)
                 if (textView.text.toString() != content) {
                     textView.text = content
                 }
             } else {
+                messageScroll.visibility = View.GONE
                 textView.visibility = View.GONE
                 textView.text = ""
             }
@@ -227,6 +263,24 @@ class ChatAdapter(private val messages: MutableList<ChatMessage>) : RecyclerView
                 copyToClipboard(itemView, "assistant_reply", content)
             }
             copyReplyButton.visibility = if (content.isNotBlank()) View.VISIBLE else View.GONE
+        }
+
+        private fun bindFinalContent(content: String) {
+            val table = parseFirstMarkdownTable(content)
+            if (table == null || table.headers.size < 3 || table.rows.isEmpty()) {
+                structuredContent.visibility = View.GONE
+                structuredContent.removeAllViews()
+                messageScroll.visibility = View.VISIBLE
+                textView.visibility = View.VISIBLE
+                renderMarkdown(textView, content, allowWideTables = true)
+                return
+            }
+
+            messageScroll.visibility = View.GONE
+            textView.visibility = View.GONE
+            textView.text = ""
+            structuredContent.visibility = View.VISIBLE
+            renderStructuredComparison(content, table)
         }
 
         private fun formatAnalysisTime(timings: Map<String, Any>?): String {
@@ -246,8 +300,11 @@ class ChatAdapter(private val messages: MutableList<ChatMessage>) : RecyclerView
             }
         }
 
-        private fun renderMarkdown(textView: TextView, markdown: String) {
-            val renderer = markwon ?: Markwon.create(itemView.context).also { markwon = it }
+        private fun renderMarkdown(textView: TextView, markdown: String, allowWideTables: Boolean = false) {
+            if (allowWideTables) {
+                configureWideTableTextWidth(markdown)
+            }
+            val renderer = markwon ?: createMarkwon(itemView.context).also { markwon = it }
             val spanned = renderer.toMarkdown(markdown)
             val stripped = stripUrlSpans(spanned)
             if (shouldReplaceRenderedText(textView, stripped)) {
@@ -256,10 +313,364 @@ class ChatAdapter(private val messages: MutableList<ChatMessage>) : RecyclerView
             textView.keepSelectable()
         }
 
+        private fun renderStructuredComparison(originalMarkdown: String, table: MarkdownTable) {
+            if (structuredContent.tag == originalMarkdown && structuredContent.childCount > 0) return
+            structuredContent.tag = originalMarkdown
+            structuredContent.removeAllViews()
+
+            addMarkdownBlock(table.before)
+            addComparisonBlocks(table)
+            addMarkdownBlock(table.after)
+        }
+
+        private fun addMarkdownBlock(markdown: String) {
+            val trimmed = markdown.trim()
+            if (trimmed.isBlank()) return
+            val block = TextView(itemView.context).apply {
+                layoutParams = LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT,
+                    ViewGroup.LayoutParams.WRAP_CONTENT,
+                ).apply {
+                    bottomMargin = dp(8)
+                }
+                setTextColor(Color.parseColor("#222222"))
+                setTextSize(TypedValue.COMPLEX_UNIT_SP, 17f)
+                setLineSpacing(dp(6).toFloat(), 1.0f)
+                setPadding(0, dp(2), 0, dp(2))
+                keepSelectable()
+            }
+            renderMarkdown(block, trimmed)
+            structuredContent.addView(block)
+        }
+
+        private fun addComparisonBlocks(table: MarkdownTable) {
+            val productNames = table.headers.drop(1).map { it.ifBlank { "商品" } }
+            if (productNames.isEmpty()) return
+
+            val comparisons = productNames.mapIndexed { productIndex, productName ->
+                val fields = table.rows.mapNotNull { row ->
+                    val dimension = row.firstOrNull()?.trim().orEmpty()
+                    if (dimension.isBlank()) return@mapNotNull null
+                    val value = row.getOrNull(productIndex + 1)?.trim().orEmpty()
+                    dimension to value.ifBlank { "未提及" }
+                }
+                val conclusion = fields.firstOrNull { isConclusionDimension(it.first) }?.second.orEmpty()
+                ProductComparison(
+                    index = productIndex,
+                    name = productName,
+                    fields = fields,
+                    conclusion = conclusion,
+                    rankScore = rankScore(conclusion),
+                )
+            }.sortedWith(compareBy<ProductComparison> { it.rankScore }.thenBy { it.index })
+
+            addRankingSummary(comparisons)
+            comparisons.forEachIndexed { displayIndex, comparison ->
+                addProductComparisonCard(comparison, displayIndex)
+            }
+        }
+
+        private fun addRankingSummary(comparisons: List<ProductComparison>) {
+            val summary = LinearLayout(itemView.context).apply {
+                orientation = LinearLayout.VERTICAL
+                layoutParams = LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT,
+                    ViewGroup.LayoutParams.WRAP_CONTENT,
+                ).apply {
+                    topMargin = dp(6)
+                    bottomMargin = dp(8)
+                }
+                setPadding(dp(12), dp(10), dp(12), dp(10))
+                background = roundedBackground("#EEF6FF", "#BFDBFE", 8)
+            }
+            summary.addView(TextView(itemView.context).apply {
+                layoutParams = LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT,
+                    ViewGroup.LayoutParams.WRAP_CONTENT,
+                ).apply {
+                    bottomMargin = dp(8)
+                }
+                text = "推荐排序"
+                setTextColor(Color.parseColor("#0F172A"))
+                setTextSize(TypedValue.COMPLEX_UNIT_SP, 15f)
+                typeface = Typeface.DEFAULT_BOLD
+            })
+            comparisons.forEachIndexed { index, comparison ->
+                summary.addView(TextView(itemView.context).apply {
+                    layoutParams = LinearLayout.LayoutParams(
+                        ViewGroup.LayoutParams.MATCH_PARENT,
+                        ViewGroup.LayoutParams.WRAP_CONTENT,
+                    ).apply {
+                        topMargin = if (index == 0) 0 else dp(5)
+                    }
+                    text = "${rankLabel(index, comparison.rankScore)}：${comparison.name}" +
+                        comparison.conclusion.takeIf { it.isNotBlank() }?.let { "\n$it" }.orEmpty()
+                    setTextColor(Color.parseColor("#1E3A8A"))
+                    setTextSize(TypedValue.COMPLEX_UNIT_SP, 15f)
+                    setLineSpacing(dp(4).toFloat(), 1.0f)
+                })
+            }
+            structuredContent.addView(summary)
+        }
+
+        private fun addProductComparisonCard(comparison: ProductComparison, displayIndex: Int) {
+            val card = LinearLayout(itemView.context).apply {
+                orientation = LinearLayout.VERTICAL
+                layoutParams = LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT,
+                    ViewGroup.LayoutParams.WRAP_CONTENT,
+                ).apply {
+                    topMargin = dp(6)
+                    bottomMargin = dp(8)
+                }
+                setPadding(dp(12), dp(11), dp(12), dp(11))
+                background = roundedBackground("#FFFFFF", "#E2E8F0", 8)
+            }
+
+            val header = LinearLayout(itemView.context).apply {
+                orientation = LinearLayout.VERTICAL
+                layoutParams = LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT,
+                    ViewGroup.LayoutParams.WRAP_CONTENT,
+                ).apply {
+                    bottomMargin = dp(8)
+                }
+            }
+            header.addView(TextView(itemView.context).apply {
+                layoutParams = LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT,
+                    ViewGroup.LayoutParams.WRAP_CONTENT,
+                )
+                text = rankLabel(displayIndex, comparison.rankScore)
+                setTextColor(Color.parseColor("#2563EB"))
+                setTextSize(TypedValue.COMPLEX_UNIT_SP, 13f)
+                typeface = Typeface.DEFAULT_BOLD
+            })
+            header.addView(TextView(itemView.context).apply {
+                layoutParams = LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT,
+                    ViewGroup.LayoutParams.WRAP_CONTENT,
+                ).apply {
+                    topMargin = dp(2)
+                }
+                text = comparison.name
+                setTextColor(Color.parseColor("#0F172A"))
+                setTextSize(TypedValue.COMPLEX_UNIT_SP, 17f)
+                typeface = Typeface.DEFAULT_BOLD
+                setLineSpacing(dp(3).toFloat(), 1.0f)
+            })
+            card.addView(header)
+
+            comparison.fields.forEach { (dimension, value) ->
+                val row = LinearLayout(itemView.context).apply {
+                    orientation = LinearLayout.VERTICAL
+                    layoutParams = LinearLayout.LayoutParams(
+                        ViewGroup.LayoutParams.MATCH_PARENT,
+                        ViewGroup.LayoutParams.WRAP_CONTENT,
+                    ).apply {
+                        topMargin = dp(7)
+                    }
+                    setPadding(dp(10), dp(8), dp(10), dp(8))
+                    background = roundedBackground(
+                        if (isConclusionDimension(dimension)) "#F8FAFC" else "#FFFFFF",
+                        "#E5E7EB",
+                        6,
+                    )
+                }
+                row.addView(TextView(itemView.context).apply {
+                    layoutParams = LinearLayout.LayoutParams(
+                        ViewGroup.LayoutParams.MATCH_PARENT,
+                        ViewGroup.LayoutParams.WRAP_CONTENT,
+                    )
+                    text = dimension
+                    setTextColor(Color.parseColor("#64748B"))
+                    setTextSize(TypedValue.COMPLEX_UNIT_SP, 13f)
+                    typeface = Typeface.DEFAULT_BOLD
+                })
+                row.addView(TextView(itemView.context).apply {
+                        layoutParams = LinearLayout.LayoutParams(
+                            ViewGroup.LayoutParams.MATCH_PARENT,
+                            ViewGroup.LayoutParams.WRAP_CONTENT,
+                        ).apply {
+                            topMargin = dp(3)
+                        }
+                        text = value
+                        setTextColor(Color.parseColor(if (isConclusionDimension(dimension)) "#0F172A" else "#1F2937"))
+                        setTextSize(TypedValue.COMPLEX_UNIT_SP, 15f)
+                        setLineSpacing(dp(4).toFloat(), 1.0f)
+                        keepSelectable()
+                })
+                card.addView(row)
+            }
+
+            structuredContent.addView(card)
+        }
+
+        private fun isConclusionDimension(dimension: String): Boolean {
+            return dimension.contains("推荐") || dimension.contains("结论")
+        }
+
+        private fun rankScore(conclusion: String): Int {
+            return when {
+                conclusion.contains("首选") || conclusion.contains("优先") || conclusion.contains("最推荐") -> 0
+                conclusion.contains("备选") || conclusion.contains("次选") || conclusion.contains("可以选") -> 1
+                conclusion.contains("不建议") || conclusion.contains("不太") || conclusion.contains("谨慎") || conclusion.contains("不推荐") -> 3
+                else -> 2
+            }
+        }
+
+        private fun rankLabel(index: Int, rankScore: Int): String {
+            return when {
+                rankScore == 0 -> "首选"
+                rankScore == 1 -> "备选"
+                rankScore >= 3 -> "谨慎选择"
+                index == 0 -> "推荐 ${index + 1}"
+                else -> "参考 ${index + 1}"
+            }
+        }
+
+        private fun roundedBackground(fillColor: String, strokeColor: String, radiusDp: Int): GradientDrawable {
+            return GradientDrawable().apply {
+                shape = GradientDrawable.RECTANGLE
+                setColor(Color.parseColor(fillColor))
+                setStroke(dp(1), Color.parseColor(strokeColor))
+                cornerRadius = dp(radiusDp).toFloat()
+            }
+        }
+
+        private fun configureWideTableTextWidth(markdown: String) {
+            val targetWidth = if (containsMarkdownTable(markdown)) {
+                estimateTableWidthPx(markdown)
+            } else {
+                ViewGroup.LayoutParams.MATCH_PARENT
+            }
+            val params = textView.layoutParams
+            if (params.width != targetWidth) {
+                params.width = targetWidth
+                textView.layoutParams = params
+            }
+            messageScroll.isHorizontalScrollBarEnabled = targetWidth != ViewGroup.LayoutParams.MATCH_PARENT
+        }
+
+        private fun containsMarkdownTable(markdown: String): Boolean {
+            val lines = markdown.lines()
+            return lines.windowed(2).any { (header, separator) ->
+                header.trim().startsWith("|") &&
+                    header.trim().endsWith("|") &&
+                    Regex("""^\s*\|?\s*:?-{3,}:?\s*(\|\s*:?-{3,}:?\s*)+\|?\s*$""").matches(separator)
+            }
+        }
+
+        private fun parseFirstMarkdownTable(markdown: String): MarkdownTable? {
+            val lines = markdown.lines()
+            for (index in 0 until lines.lastIndex) {
+                val header = lines[index].trim()
+                val separator = lines[index + 1].trim()
+                if (!isMarkdownTableHeader(header, separator)) continue
+
+                val headers = parseMarkdownTableRow(header)
+                if (headers.size < 2) continue
+
+                val rows = mutableListOf<List<String>>()
+                var endIndex = index + 2
+                while (endIndex < lines.size) {
+                    val rowLine = lines[endIndex].trim()
+                    if (!rowLine.startsWith("|") || !rowLine.endsWith("|")) break
+                    val cells = parseMarkdownTableRow(rowLine)
+                    if (cells.isEmpty()) break
+                    rows.add(cells)
+                    endIndex += 1
+                }
+                if (rows.isEmpty()) return null
+
+                return MarkdownTable(
+                    headers = headers,
+                    rows = rows.map { normalizeTableCells(it, headers.size) },
+                    before = lines.take(index).joinToString("\n"),
+                    after = lines.drop(endIndex).joinToString("\n"),
+                )
+            }
+            return null
+        }
+
+        private fun isMarkdownTableHeader(header: String, separator: String): Boolean {
+            return header.startsWith("|") &&
+                header.endsWith("|") &&
+                Regex("""^\s*\|?\s*:?-{3,}:?\s*(\|\s*:?-{3,}:?\s*)+\|?\s*$""").matches(separator)
+        }
+
+        private fun parseMarkdownTableRow(row: String): List<String> {
+            return row.trim().trim('|').split('|').map { cell ->
+                cell.trim()
+                    .replace("<br>", "\n", ignoreCase = true)
+                    .replace("<br/>", "\n", ignoreCase = true)
+                    .replace("<br />", "\n", ignoreCase = true)
+                    .replace(Regex("""\*\*([^*]+)\*\*"""), "$1")
+                    .replace(Regex("""`([^`]+)`"""), "$1")
+            }
+        }
+
+        private fun normalizeTableCells(cells: List<String>, expectedSize: Int): List<String> {
+            return when {
+                cells.size == expectedSize -> cells
+                cells.size > expectedSize -> cells.take(expectedSize)
+                else -> cells + List(expectedSize - cells.size) { "" }
+            }
+        }
+
+        private fun estimateTableWidthPx(markdown: String): Int {
+            val maxColumns = mutableListOf<Int>()
+            for (line in markdown.lines()) {
+                val trimmed = line.trim()
+                if (!trimmed.startsWith("|") || !trimmed.endsWith("|")) continue
+                val cells = trimmed.trim('|').split('|').map { it.trim() }
+                if (cells.all { it.replace(":", "").replace("-", "").isBlank() }) continue
+                cells.forEachIndexed { index, cell ->
+                    val width = displayWidth(cell).coerceAtLeast(4)
+                    if (index >= maxColumns.size) {
+                        maxColumns.add(width)
+                    } else if (width > maxColumns[index]) {
+                        maxColumns[index] = width
+                    }
+                }
+            }
+            if (maxColumns.size < 2) return ViewGroup.LayoutParams.MATCH_PARENT
+
+            val textSizePx = textView.textSize
+            val contentWidth = maxColumns.sumOf { (it * textSizePx * 0.62f).toInt() }
+            val cellPadding = dp(28) * maxColumns.size
+            val borders = dp(2) * (maxColumns.size + 1)
+            val estimated = contentWidth + cellPadding + borders
+            val viewport = (messageScroll.width.takeIf { it > 0 }
+                ?: (itemView.resources.displayMetrics.widthPixels - itemView.paddingStart - itemView.paddingEnd))
+                .coerceAtLeast(dp(280))
+            return estimated.coerceAtLeast(viewport).coerceAtMost(dp(2200))
+        }
+
+        private fun displayWidth(text: String): Int {
+            var width = 0
+            for (char in text) {
+                width += when {
+                    char.code <= 0x007F -> 1
+                    Character.UnicodeScript.of(char.code) == Character.UnicodeScript.HAN -> 2
+                    else -> 2
+                }
+            }
+            return width
+        }
+
+        private fun dp(value: Int): Int {
+            return TypedValue.applyDimension(
+                TypedValue.COMPLEX_UNIT_DIP,
+                value.toFloat(),
+                itemView.resources.displayMetrics,
+            ).toInt()
+        }
+
         private fun shouldReplaceRenderedText(textView: TextView, rendered: Spanned): Boolean {
             val currentText = textView.text
             if (currentText.toString() != rendered.toString()) return true
-            if (currentText !is Spanned) return false
+            if (currentText !is Spanned) return true
 
             return currentText.getSpans(0, currentText.length, URLSpan::class.java).isNotEmpty() ||
                 currentText.getSpans(0, currentText.length, ClickableSpan::class.java).isNotEmpty()

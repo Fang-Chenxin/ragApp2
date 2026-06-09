@@ -65,17 +65,32 @@
             android:visibility="gone" />
     </LinearLayout>
 
-    <TextView
-        android:id="@+id/assistantMessageText"
+    <HorizontalScrollView
+        android:id="@+id/assistantMessageScroll"
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
-        android:textIsSelectable="true"
-        android:longClickable="true"
-        android:textColor="#222222"
-        android:textSize="17sp"
-        android:lineSpacingExtra="6dp"
-        android:paddingTop="2dp"
-        android:paddingBottom="2dp" />
+        android:fillViewport="true"
+        android:scrollbars="none">
+
+        <TextView
+            android:id="@+id/assistantMessageText"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:textIsSelectable="true"
+            android:longClickable="true"
+            android:textColor="#222222"
+            android:textSize="17sp"
+            android:lineSpacingExtra="6dp"
+            android:paddingTop="2dp"
+            android:paddingBottom="2dp" />
+    </HorizontalScrollView>
+
+    <LinearLayout
+        android:id="@+id/assistantStructuredContent"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="vertical"
+        android:visibility="gone" />
 
     <HorizontalScrollView
         android:id="@+id/productCardsScroll"

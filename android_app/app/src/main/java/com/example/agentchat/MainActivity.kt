@@ -30,7 +30,6 @@ import com.google.gson.annotations.SerializedName
 import okhttp3.*
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.RequestBody.Companion.toRequestBody
-import io.noties.markwon.Markwon
 import java.io.IOException
 import java.util.UUID
 
@@ -990,7 +989,7 @@ class MainActivity : AppCompatActivity() {
 
     private fun resetChatAdapter() {
         adapter = ChatAdapter(messages)
-        adapter.attachMarkwon(Markwon.create(this))
+        adapter.attachMarkwon(ChatAdapter.createMarkwon(this))
         recyclerView.adapter = adapter
         recyclerView.itemAnimator = null
     }

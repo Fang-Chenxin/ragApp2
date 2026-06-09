@@ -221,7 +221,182 @@ class PurchaseIntentTest(unittest.TestCase):
         self.assertIn("对比建议", system_content)
 
 
+class SearchPlanContextExclusionComparisonTest(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        sqlite_product_search_service.initialize()
+
+    def test_search_plan_infers_followup_exclusion_comparison_and_price_fields(self):
+        cheaper_plan = ToolChatService._normalize_search_plan(
+            {"target_product": "跑步鞋", "query_text": "再便宜点的呢"},
+            "再便宜点的呢",
+        )
+        excluded_plan = ToolChatService._normalize_search_plan(
+            {"target_product": "跑步鞋", "query_text": "除了耐克还有什么跑步鞋"},
+            "除了耐克还有什么跑步鞋",
+        )
+        alcohol_plan = ToolChatService._normalize_search_plan(
+            {"target_product": "防晒", "query_text": "不要含酒精的防晒"},
+            "不要含酒精的防晒",
+        )
+        comparison_plan = ToolChatService._normalize_search_plan(
+            {"target_product": "防晒", "query_text": "对比这两款防晒"},
+            "对比这两款防晒，重点看价格和成分",
+        )
+
+        self.assertTrue(cheaper_plan.get("is_followup"))
+        self.assertEqual(cheaper_plan.get("price_preference"), "cheaper")
+        self.assertIn("Nike", excluded_plan.get("excluded_brands", []))
+        self.assertNotIn("耐克", excluded_plan.get("query_text", ""))
+        self.assertIn("酒精", alcohol_plan.get("excluded_terms", []))
+        self.assertTrue(comparison_plan.get("comparison_intent"))
+        self.assertIn("价格", comparison_plan.get("comparison_dimensions", []))
+        self.assertIn("成分", comparison_plan.get("comparison_dimensions", []))
+
+    def test_target_products_filter_excluded_brand_and_alcohol_with_search_docs(self):
+        brand_plan = ToolChatService._normalize_search_plan(
+            {
+                "target_product": "跑步鞋",
+                "query_text": "跑步鞋",
+                "allowed_categories": ["服饰运动"],
+                "excluded_brands": ["Nike"],
+            },
+            "除了耐克还有什么跑步鞋",
+        )
+        brand_targets = ToolChatService._build_target_products(
+            direct_products=[
+                {"product_id": "p_clothes_007"},
+                {"product_id": "p_clothes_004"},
+            ],
+            tool_products=[],
+            user_query="除了耐克还有什么跑步鞋",
+            search_plan=brand_plan,
+        )
+
+        self.assertTrue(brand_targets)
+        self.assertTrue(all("nike" not in (p.get("brand") or "").lower() and "耐克" not in (p.get("brand") or "") for p in brand_targets))
+
+        alcohol_plan = ToolChatService._normalize_search_plan(
+            {
+                "target_product": "防晒",
+                "query_text": "防晒",
+                "allowed_categories": ["美妆护肤"],
+                "excluded_terms": ["酒精"],
+            },
+            "不要含酒精的防晒",
+        )
+        alcohol_targets = ToolChatService._build_target_products(
+            direct_products=[
+                {"product_id": "p_beauty_010"},
+                {"product_id": "p_beauty_006"},
+            ],
+            tool_products=[],
+            user_query="不要含酒精的防晒",
+            search_plan=alcohol_plan,
+        )
+
+        target_ids = [item.get("product_id") for item in alcohol_targets]
+        self.assertIn("p_beauty_006", target_ids)
+        self.assertNotIn("p_beauty_010", target_ids)
+
+    def test_price_preference_reorders_candidates(self):
+        plan = ToolChatService._normalize_search_plan(
+            {
+                "target_product": "美妆",
+                "query_text": "美妆",
+                "price_preference": "cheaper",
+            },
+            "再便宜点的呢",
+        )
+        products = [
+            {"product_id": "expensive", "base_price": 300},
+            {"product_id": "cheap", "base_price": 99},
+        ]
+
+        ordered = ToolChatService._apply_price_preference(products, plan)
+
+        self.assertEqual([item["product_id"] for item in ordered], ["cheap", "expensive"])
+
+    def test_comparison_final_prompt_requires_markdown_table(self):
+        messages = ToolChatService._build_final_recommendation_messages(
+            "你是导购助手。",
+            "用户想比较两款防晒。",
+            [
+                {"rank": 1, "title": "防晒A", "brand": "A", "category": "美妆护肤", "sub_category": "防晒", "base_price": 100, "match_type": "direct"},
+                {"rank": 2, "title": "防晒B", "brand": "B", "category": "美妆护肤", "sub_category": "防晒", "base_price": 160, "match_type": "direct"},
+            ],
+            "对比这两款防晒，重点看价格和成分",
+            [],
+            {
+                "comparison_intent": True,
+                "comparison_dimensions": ["价格", "成分"],
+                "excluded_terms": ["酒精"],
+                "is_followup": True,
+                "context_carryover": "上一轮推荐的两款防晒",
+            },
+        )
+        system_content = messages[0]["content"]
+
+        self.assertIn("Markdown 表格", system_content)
+        self.assertIn("价格", system_content)
+        self.assertIn("成分", system_content)
+        self.assertIn("已排除关键词/属性", system_content)
+        self.assertIn("多轮追问口径", system_content)
+
+
 class ToolChatStreamPipelineTest(unittest.IsolatedAsyncioTestCase):
+    def test_direct_reply_detects_non_whitelisted_product_mentions(self):
+        selected_products = [
+            {
+                "product_id": "p_food_010",
+                "title": "良品铺子 肉松饼1000g/箱 松软糕点休闲零食早餐代餐点心",
+                "brand": "良品铺子",
+                "recommendation_role": "primary",
+            }
+        ]
+        candidate_products = [
+            *selected_products,
+            {
+                "product_id": "p_food_009",
+                "title": "三只松鼠 每日坚果750g/30袋 混合坚果仁干果礼盒独立小包装",
+                "brand": "三只松鼠",
+            },
+        ]
+        reply = "推荐良品铺子肉松饼，另外三只松鼠每日坚果也适合办公室采购。"
+
+        leaked = ToolChatService._mentioned_non_whitelisted_products(reply, selected_products, candidate_products)
+        covers = ToolChatService._direct_reply_covers_products(reply, selected_products, candidate_products)
+
+        self.assertEqual([item.get("product_id") for item in leaked], ["p_food_009"])
+        self.assertFalse(covers)
+
+    def test_direct_reply_mention_detection_uses_candidate_distinctive_terms(self):
+        selected_products = [
+            {
+                "product_id": "p_food_004",
+                "title": "元气森林 0糖0脂0卡 白桃味气泡水480ml 碳酸饮料即饮苏打型饮品",
+                "brand": "元气森林",
+                "recommendation_role": "primary",
+            }
+        ]
+        candidate_products = [
+            *selected_products,
+            {
+                "product_id": "p_food_024",
+                "title": "元气森林 白葡萄味 苏打气泡水 480ml×12 0糖0脂0卡",
+                "brand": "元气森林",
+            },
+        ]
+
+        generic_reply = "元气森林气泡水都挺清爽，0糖0脂0卡，适合办公室日常喝。"
+        specific_reply = "元气森林白葡萄味整箱更适合囤货。"
+
+        generic_leaked = ToolChatService._mentioned_non_whitelisted_products(generic_reply, selected_products, candidate_products)
+        specific_leaked = ToolChatService._mentioned_non_whitelisted_products(specific_reply, selected_products, candidate_products)
+
+        self.assertEqual(generic_leaked, [])
+        self.assertEqual([item.get("product_id") for item in specific_leaked], ["p_food_024"])
+
     async def test_final_stage_streams_text_before_product_cards(self):
         class FakeLLM:
             connected = True
@@ -276,6 +451,89 @@ class ToolChatStreamPipelineTest(unittest.IsolatedAsyncioTestCase):
 
         self.assertLess(content_index, products_index)
         self.assertIn("商品卡片先放上来", chunks[content_index].get("content", ""))
+
+    async def test_comparison_direct_reply_forces_constrained_markdown_final(self):
+        class FakeLLM:
+            connected = True
+            model = "fake"
+
+            async def chat_stream(self, messages, model=None, model_config=None):
+                self.messages = messages
+                yield "| 维度 | 袋装五连包 | 桶装整箱 |\n| --- | --- | --- |\n| 价格 | 18.9元 | 45元 |"
+
+        fake_llm = FakeLLM()
+        service = ToolChatService(vector_store=SimpleNamespace(), llm=fake_llm)
+        selected_products = [
+            {
+                "rank": 1,
+                "product_id": "p_food_021",
+                "title": "康师傅 红烧牛肉面 方便面袋装 114g×5 袋 五连包整袋",
+                "brand": "康师傅",
+                "category": "食品饮料",
+                "sub_category": "方便食品",
+                "base_price": 18.9,
+                "match_type": "direct",
+                "recommendation_role": "primary",
+            },
+            {
+                "rank": 2,
+                "product_id": "p_food_011",
+                "title": "康师傅 经典红烧牛肉面110g*12桶装方便面泡面速食面整箱装",
+                "brand": "康师傅",
+                "category": "食品饮料",
+                "sub_category": "方便食品",
+                "base_price": 45,
+                "match_type": "direct",
+                "recommendation_role": "supporting",
+            },
+        ]
+
+        def fake_selected_payloads(ctx):
+            return selected_products, ["p_food_021", "p_food_011"], [
+                {
+                    "type": "selected_products",
+                    "content": "已选定目标商品",
+                    "selected_product_ids": ["p_food_021", "p_food_011"],
+                    "selected_products": selected_products,
+                    "timings": None,
+                }
+            ]
+
+        service._stream_selected_product_payloads = fake_selected_payloads
+        ctx = _StreamPipelineContext(
+            user_query="两种红烧牛肉面哪一个更划算",
+            conversation_history=[],
+            max_tool_calls=5,
+            model="fake",
+            model_config={"api_key": "test"},
+            timings={},
+            t_total_start=time.perf_counter(),
+            messages=[],
+            tools=[],
+            task_group=_StreamTaskGroup(),
+            final_system_prompt="你是导购助手。",
+            search_plan={
+                "comparison_intent": True,
+                "comparison_dimensions": ["价格", "品类/规格", "推荐结论"],
+            },
+        )
+        direct_message = SimpleNamespace(
+            content="康师傅袋装五连包更划算，桶装整箱更适合出行。",
+            tool_calls=None,
+        )
+
+        chunks = [chunk async for chunk in service._stream_stage_direct_reply_finalization(ctx, direct_message)]
+        organizing = next(
+            chunk
+            for chunk in chunks
+            if chunk.get("phase") == "organizing_results" and chunk.get("mode") == "assistant_direct_reply"
+        )
+        content = "".join(chunk.get("content", "") for chunk in chunks if chunk.get("type") == "content")
+
+        self.assertTrue(organizing.get("reply_covers_targets"))
+        self.assertTrue(organizing.get("comparison_requires_constrained_final"))
+        self.assertTrue(organizing.get("needs_constrained_final"))
+        self.assertIn("| 维度 |", content)
 
     async def test_pipeline_stream_can_complete_without_tools(self):
         class FakeLLM:

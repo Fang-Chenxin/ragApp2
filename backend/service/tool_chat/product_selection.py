@@ -18,6 +18,22 @@ logger = get_logger("service.tool_chat")
 class ToolChatProductSelectionMixin:
     """目标商品提取、合并、校验和对外回复清洗能力。"""
 
+    _KNOWN_BRAND_ALIASES: Dict[str, tuple[str, ...]] = {
+        "Apple": ("apple", "苹果", "Apple 苹果"),
+        "Nike": ("nike", "耐克"),
+        "阿迪达斯": ("adidas", "阿迪", "阿迪达斯"),
+        "安踏": ("anta", "安踏"),
+        "李宁": ("lining", "李宁"),
+        "优衣库": ("uniqlo", "优衣库"),
+        "迪卡侬": ("decathlon", "迪卡侬"),
+        "理肤泉": ("la roche-posay", "理肤泉"),
+        "安热沙": ("anessa", "安热沙"),
+        "巴黎欧莱雅": ("l'oreal paris", "巴黎欧莱雅", "欧莱雅"),
+        "薇诺娜": ("winona", "薇诺娜"),
+        "花西子": ("florasis", "花西子"),
+        "完美日记": ("perfect diary", "完美日记"),
+    }
+
     @staticmethod
     def _normalize_search_plan(raw_plan: Any, user_query: str = "") -> Optional[Dict[str, Any]]:
         """标准化 LLM 生成的商品搜索计划；无效时返回 None。"""
@@ -35,9 +51,28 @@ class ToolChatProductSelectionMixin:
                 return [str(item).strip() for item in value if str(item).strip()]
             return []
 
+        def bool_value(key: str, default: bool = False) -> bool:
+            value = raw_plan.get(key)
+            if isinstance(value, bool):
+                return value
+            if isinstance(value, str):
+                return value.strip().lower() in {"true", "yes", "1", "是", "需要", "对"}
+            return default
+
         purchase_intent, purchase_intent_reason = ToolChatProductSelectionMixin._normalize_purchase_intent(
             text_value("purchase_intent"),
             text_value("purchase_intent_reason"),
+            user_query,
+        )
+        inferred_excluded_brands = ToolChatProductSelectionMixin._infer_excluded_brands_from_query(user_query)
+        inferred_excluded_terms = ToolChatProductSelectionMixin._infer_excluded_terms_from_query(user_query)
+        inferred_price_preference = ToolChatProductSelectionMixin._infer_price_preference_from_query(user_query)
+        inferred_comparison = ToolChatProductSelectionMixin._infer_comparison_intent_from_query(user_query)
+        excluded_brands = ToolChatProductSelectionMixin._merge_terms(list_value("excluded_brands"), inferred_excluded_brands)
+        excluded_terms = ToolChatProductSelectionMixin._merge_terms(list_value("excluded_terms"), inferred_excluded_terms)
+        excluded_attributes = ToolChatProductSelectionMixin._merge_terms(list_value("excluded_attributes"), [])
+        comparison_dimensions = ToolChatProductSelectionMixin._normalize_comparison_dimensions(
+            list_value("comparison_dimensions"),
             user_query,
         )
         plan = {
@@ -50,16 +85,173 @@ class ToolChatProductSelectionMixin:
             "acceptable_fallback_terms": list_value("acceptable_fallback_terms"),
             "allowed_categories": list_value("allowed_categories"),
             "forbidden_categories": list_value("forbidden_categories"),
+            "excluded_brands": excluded_brands,
+            "excluded_terms": excluded_terms,
+            "excluded_attributes": excluded_attributes,
+            "is_followup": bool_value("is_followup", ToolChatProductSelectionMixin._infer_followup_from_query(user_query)),
+            "context_carryover": text_value("context_carryover"),
+            "comparison_intent": bool_value("comparison_intent", inferred_comparison),
+            "comparison_dimensions": comparison_dimensions,
+            "price_preference": ToolChatProductSelectionMixin._normalize_price_preference(
+                text_value("price_preference"),
+                inferred_price_preference,
+            ),
             "fallback_notice_required": bool(raw_plan.get("fallback_notice_required", True)),
             "purchase_intent": purchase_intent,
             "purchase_intent_reason": purchase_intent_reason,
             "reason": text_value("reason"),
         }
+        plan["query_text"] = ToolChatProductSelectionMixin._strip_exclusion_phrases(
+            plan["query_text"],
+            plan["excluded_brands"],
+            plan["excluded_terms"],
+        ) or plan["query_text"]
+        plan["fallback_query_texts"] = [
+            cleaned
+            for text in plan["fallback_query_texts"]
+            if (cleaned := ToolChatProductSelectionMixin._strip_exclusion_phrases(text, excluded_brands, excluded_terms))
+        ]
         if not plan["direct_terms"] and plan["target_product"]:
             plan["direct_terms"] = [plan["target_product"]]
         # 用语义表修正 LLM 输出，确保品类值和约束来自业务知识而非 LLM 猜测
         plan = ToolChatProductSelectionMixin._apply_semantic_corrections(plan, user_query)
         return plan
+
+    @staticmethod
+    def _merge_terms(*groups: List[str]) -> List[str]:
+        """合并词列表，大小写不敏感去重但保留首次出现的展示形式。"""
+        merged: List[str] = []
+        seen: set[str] = set()
+        for group in groups:
+            for item in group:
+                value = str(item or "").strip()
+                if not value:
+                    continue
+                key = value.lower()
+                if key in seen:
+                    continue
+                seen.add(key)
+                merged.append(value)
+        return merged
+
+    @classmethod
+    def _infer_excluded_brands_from_query(cls, user_query: str) -> List[str]:
+        """从否定表达中抽取品牌排除条件，如“除了耐克”“不要Nike”。"""
+        query = user_query or ""
+        if not re.search(r"(?:除了|除开|不要|不想要|不考虑|排除|别给|避开|不要再推荐)", query, flags=re.I):
+            return []
+        excluded: List[str] = []
+        for canonical, aliases in cls._KNOWN_BRAND_ALIASES.items():
+            terms = (canonical, *aliases)
+            if any(term and re.search(rf"(?:除了|除开|不要|不想要|不考虑|排除|别给|避开|不要再推荐)[^，。；;,.]*{re.escape(term)}", query, flags=re.I) for term in terms):
+                excluded.append(canonical)
+                continue
+            if any(term and re.search(rf"{re.escape(term)}[^，。；;,.]*(?:以外|之外)", query, flags=re.I) for term in terms):
+                excluded.append(canonical)
+        return excluded
+
+    @staticmethod
+    def _infer_excluded_terms_from_query(user_query: str) -> List[str]:
+        """从用户原话抽取通用排除关键词。"""
+        query = user_query or ""
+        terms: List[str] = []
+        if re.search(r"(?:不要|不含|无|避开|不想要|不考虑|排除|别给)[^，。；;,.]*(?:酒精|香精|防腐剂|糖|咖啡因)", query, flags=re.I):
+            for term in ("酒精", "香精", "防腐剂", "糖", "咖啡因"):
+                if term in query:
+                    terms.append(term)
+        for match in re.finditer(r"(?:不要|不想要|不考虑|排除|避开|别给)([^，。；;,.]{1,12})", query):
+            value = match.group(1).strip()
+            value = re.sub(r"(的|款|商品|产品|那种|这种)$", "", value).strip()
+            if any(term in value for term in ("酒精", "香精", "防腐剂", "糖", "咖啡因")):
+                continue
+            if value and value not in terms and not any(value in aliases or value == brand for brand, aliases in ToolChatProductSelectionMixin._KNOWN_BRAND_ALIASES.items()):
+                terms.append(value)
+        return terms
+
+    @staticmethod
+    def _infer_followup_from_query(user_query: str) -> bool:
+        query = re.sub(r"\s+", "", user_query or "")
+        return bool(re.search(r"(再|那|这些|这几|上面|刚才|前面|换|还有|便宜点|贵点|对比|哪个)", query))
+
+    @staticmethod
+    def _infer_price_preference_from_query(user_query: str) -> str:
+        query = re.sub(r"\s+", "", user_query or "")
+        if re.search(r"(便宜点|更便宜|低价|平价|预算低|划算|性价比)", query):
+            return "cheaper"
+        if re.search(r"(贵点|高端|旗舰|预算高|更好|升级)", query):
+            return "premium"
+        return ""
+
+    @staticmethod
+    def _normalize_price_preference(raw_value: str, inferred_value: str = "") -> str:
+        value = (raw_value or inferred_value or "").strip().lower()
+        aliases = {
+            "cheap": "cheaper",
+            "lower": "cheaper",
+            "low_price": "cheaper",
+            "更便宜": "cheaper",
+            "便宜": "cheaper",
+            "premium": "premium",
+            "higher": "premium",
+            "高端": "premium",
+            "same": "same",
+            "balanced": "balanced",
+        }
+        value = aliases.get(value, value)
+        return value if value in {"cheaper", "premium", "same", "balanced"} else ""
+
+    @staticmethod
+    def _infer_comparison_intent_from_query(user_query: str) -> bool:
+        query = re.sub(r"\s+", "", user_query or "")
+        return bool(re.search(
+            r"(对比|比较|区别|差别|二选一|三选一|这两款|这三款|"
+            r"哪(?:个|款|种|一款|一种).*(?:好|适合|值得|划算|性价比|便宜|买)|"
+            r"买哪(?:个|款|种|一款|一种).*(?:划算|性价比|便宜|值)|"
+            r"(?:哪(?:个|款|种|一款|一种)|哪个).*(?:更|最)?划算)",
+            query,
+        ))
+
+    @staticmethod
+    def _normalize_comparison_dimensions(raw_dimensions: List[str], user_query: str) -> List[str]:
+        """根据用户点名维度补齐默认对比维度。"""
+        dimensions = ToolChatProductSelectionMixin._merge_terms(raw_dimensions)
+        query = user_query or ""
+        keyword_dimensions = [
+            ("价格", ("价格", "价位", "预算", "便宜", "贵")),
+            ("成分", ("成分", "酒精", "香精", "配方")),
+            ("规格", ("规格", "容量", "尺码", "大小")),
+            ("适合人群", ("适合", "肤质", "人群", "场景")),
+            ("核心卖点", ("卖点", "优点", "亮点")),
+            ("注意点", ("缺点", "注意", "风险", "不足")),
+        ]
+        for dimension, triggers in keyword_dimensions:
+            if any(trigger in query for trigger in triggers) and dimension not in dimensions:
+                dimensions.append(dimension)
+        defaults = ["品牌", "品类/规格", "价格", "核心卖点", "适合人群", "注意点", "推荐结论"]
+        if not dimensions and ToolChatProductSelectionMixin._infer_comparison_intent_from_query(query):
+            return defaults
+        for dimension in defaults:
+            if len(dimensions) >= 7:
+                break
+            if dimension not in dimensions:
+                dimensions.append(dimension)
+        return dimensions[:7]
+
+    @staticmethod
+    def _strip_exclusion_phrases(text: str, excluded_brands: List[str], excluded_terms: List[str]) -> str:
+        """从检索词中移除否定片段，避免自然语言解析把排除品牌当成正向品牌过滤。"""
+        cleaned = str(text or "")
+        for term in [*excluded_brands, *excluded_terms]:
+            if not term:
+                continue
+            aliases = [term]
+            aliases.extend(ToolChatProductSelectionMixin._KNOWN_BRAND_ALIASES.get(term, ()))
+            for alias in aliases:
+                cleaned = re.sub(rf"(?:除了|除开|不要|不想要|不考虑|排除|别给|避开|不含|无|含)?{re.escape(alias)}(?:以外|之外)?", " ", cleaned, flags=re.I)
+        cleaned = re.sub(r"(?:除了|除开|不要|不想要|不考虑|排除|别给|避开|不含|无|含)(?:的)?", " ", cleaned)
+        cleaned = re.sub(r"\s+", " ", cleaned).strip(" ，。；;,.?")
+        cleaned = re.sub(r"^(?:的|有|有什么|还有什么)\s*", "", cleaned)
+        return cleaned.strip()
 
     @staticmethod
     def _normalize_purchase_intent(raw_intent: str, raw_reason: str = "", user_query: str = "") -> tuple[str, str]:
@@ -329,6 +521,37 @@ class ToolChatProductSelectionMixin:
             enriched["category"] = allowed_categories[0]
             reasons.append(f"SearchPlan 限定 allowed_categories={allowed_categories}，自动补 category")
 
+        excluded_brands = [
+            str(item).strip()
+            for item in (search_plan.get("excluded_brands") or [])
+            if str(item).strip()
+        ]
+        excluded_terms = [
+            str(item).strip()
+            for item in [
+                *(search_plan.get("excluded_terms") or []),
+                *(search_plan.get("excluded_attributes") or []),
+            ]
+            if str(item).strip()
+        ]
+        for key in ("text", "keyword"):
+            if enriched.get(key):
+                cleaned_value = ToolChatProductSelectionMixin._strip_exclusion_phrases(
+                    str(enriched.get(key) or ""),
+                    excluded_brands,
+                    excluded_terms,
+                )
+                if cleaned_value != str(enriched.get(key) or ""):
+                    enriched[key] = cleaned_value
+                    reasons.append(f"移除工具参数 {key} 中的排除词")
+        if enriched.get("brand") and ToolChatProductSelectionMixin._excluded_brand_rejection_reason(
+            str(enriched.get("brand") or ""),
+            str(enriched.get("brand") or ""),
+            excluded_brands,
+        ):
+            enriched.pop("brand", None)
+            reasons.append("移除工具参数中的排除品牌 brand")
+
         target_sub_category = ToolChatProductSelectionMixin._single_search_plan_sub_category(search_plan)
         raw_sub_category = str(search_plan.get("target_sub_category") or "").strip()
         if target_sub_category and not enriched.get("sub_category"):
@@ -417,6 +640,7 @@ class ToolChatProductSelectionMixin:
         if not verification.get("ok"):
             logger.warning("目标商品数据库校验失败: %s", verification.get("error"))
             return []
+        product_search_docs = sqlite_product_search_service.get_product_search_docs_by_ids(product_ids)
         default_sku_ids = sqlite_product_search_service.get_default_sku_ids_by_product_ids(product_ids)
 
         targets: List[Dict[str, Any]] = []
@@ -454,7 +678,12 @@ class ToolChatProductSelectionMixin:
                 if direct_match
                 else "非直接匹配商品，作为相邻品类或场景替代推荐"
             )
-            rejection_reason = ToolChatProductSelectionMixin._product_constraint_rejection_reason(user_query, target, search_plan)
+            rejection_reason = ToolChatProductSelectionMixin._product_constraint_rejection_reason(
+                user_query,
+                target,
+                search_plan,
+                product_search_docs.get(product_id, ""),
+            )
             if rejection_reason:
                 logger.info(
                     "[TargetProductsFilter] query=%s | filtered product_id=%s title=%s category=%s/%s | reason=%s",
@@ -479,6 +708,14 @@ class ToolChatProductSelectionMixin:
             targets = ToolChatProductSelectionMixin._prefer_closest_fallbacks(user_query, targets, search_plan)
             for index, item in enumerate(targets, start=1):
                 item["rank"] = index
+                item["recommendation_role"] = "fallback_primary" if index == 1 else "fallback_supporting"
+
+        targets = ToolChatProductSelectionMixin._apply_price_preference(targets, search_plan)
+        for index, item in enumerate(targets, start=1):
+            item["rank"] = index
+            if item.get("match_type") == "direct":
+                item["recommendation_role"] = "primary" if index == 1 else "supporting"
+            else:
                 item["recommendation_role"] = "fallback_primary" if index == 1 else "fallback_supporting"
 
         return targets
@@ -560,13 +797,17 @@ class ToolChatProductSelectionMixin:
         user_query: str,
         product: Dict[str, Any],
         search_plan: Optional[Dict[str, Any]] = None,
+        search_doc_text: str = "",
     ) -> Optional[str]:
         """返回候选商品被过滤的原因；未过滤返回 None。"""
         query = user_query or ""
         title = str(product.get("title") or "")
+        brand = str(product.get("brand") or "")
         category = str(product.get("category") or "")
         sub_category = str(product.get("sub_category") or "")
-        searchable = f"{title} {category} {sub_category}"
+        marketing_desc = str(product.get("marketing_desc") or "")
+        searchable = f"{title} {brand} {category} {sub_category} {marketing_desc} {search_doc_text}"
+        searchable_lower = searchable.lower()
 
         # 语义表兜底：用 fallback_relations 的 forbidden_categories 过滤
         semantic_forbidden = search_semantics_service.get_forbidden_categories(query)
@@ -574,6 +815,26 @@ class ToolChatProductSelectionMixin:
             return f"命中语义禁止类目: {category}"
 
         if search_plan:
+            excluded_brands = [
+                str(item).strip()
+                for item in (search_plan.get("excluded_brands") or [])
+                if str(item).strip()
+            ]
+            excluded_terms = [
+                str(item).strip()
+                for item in [
+                    *(search_plan.get("excluded_terms") or []),
+                    *(search_plan.get("excluded_attributes") or []),
+                ]
+                if str(item).strip()
+            ]
+            brand_rejection = ToolChatProductSelectionMixin._excluded_brand_rejection_reason(brand, searchable, excluded_brands)
+            if brand_rejection:
+                return brand_rejection
+            term_rejection = ToolChatProductSelectionMixin._excluded_term_rejection_reason(searchable, excluded_terms)
+            if term_rejection:
+                return term_rejection
+
             allowed_categories = [str(item).strip() for item in (search_plan.get("allowed_categories") or []) if str(item).strip()]
             forbidden_categories = [str(item).strip() for item in (search_plan.get("forbidden_categories") or []) if str(item).strip()]
             if allowed_categories and category not in allowed_categories:
@@ -586,7 +847,7 @@ class ToolChatProductSelectionMixin:
             semantic_terms = fallback_terms + direct_terms
             # 仅当没有 allowed_categories 约束时才用 semantic_terms 过滤，
             # 避免 fallback 结果（如唇釉、笔记本电脑）被误杀
-            if semantic_terms and not allowed_categories and not any(term in searchable.lower() for term in semantic_terms):
+            if semantic_terms and not allowed_categories and not any(term in searchable_lower for term in semantic_terms):
                 return f"未命中 direct/fallback 语义词 {semantic_terms}"
 
         beauty_terms = (
@@ -628,6 +889,77 @@ class ToolChatProductSelectionMixin:
             return "用户显式食品需求，但候选不是食品饮料"
 
         return None
+
+    @classmethod
+    def _excluded_brand_rejection_reason(cls, product_brand: str, searchable: str, excluded_brands: List[str]) -> Optional[str]:
+        """判断候选是否命中被排除品牌。"""
+        brand_lower = (product_brand or "").lower()
+        searchable_lower = (searchable or "").lower()
+        for brand in excluded_brands:
+            aliases = [brand, *cls._KNOWN_BRAND_ALIASES.get(brand, ())]
+            for alias in aliases:
+                alias_lower = str(alias or "").lower().strip()
+                if not alias_lower:
+                    continue
+                if alias_lower in brand_lower or alias_lower in searchable_lower:
+                    return f"命中用户排除品牌: {brand}"
+        return None
+
+    @staticmethod
+    def _excluded_term_rejection_reason(searchable: str, excluded_terms: List[str]) -> Optional[str]:
+        """判断候选是否命中通用否定词；无酒精/不含酒精等安全表述不视为命中。"""
+        text = searchable or ""
+        text_lower = text.lower()
+        for term in excluded_terms:
+            term_text = str(term or "").strip()
+            if not term_text:
+                continue
+            term_lower = term_text.lower()
+            if term_lower not in text_lower:
+                continue
+            if term_text == "酒精" and ToolChatProductSelectionMixin._alcohol_term_is_safe(text):
+                continue
+            if term_text == "香精" and re.search(r"(?:无|不含|没有)[^，。；;,.]{0,8}香精|香精[^，。；;,.]{0,4}(?:无添加|0添加)", text):
+                continue
+            return f"命中用户排除关键词/属性: {term_text}"
+        return None
+
+    @staticmethod
+    def _alcohol_term_is_safe(text: str) -> bool:
+        """识别“无酒精/不含酒精”这类正向安全描述。"""
+        safe_patterns = (
+            r"(?:无|不含|没有|未添加)[^，。；;,.]{0,8}酒精",
+            r"酒精[^，。；;,.]{0,4}(?:无添加|0添加|free)",
+            r"alcohol[- ]?free",
+            r"无香料、酒精",
+        )
+        risky_patterns = (
+            r"(?:含有|添加)[^，。；;,.]{0,8}酒精",
+            r"(?:酒精味|对[^，。；;,.]{0,8}酒精[^，。；;,.]{0,8}敏感)",
+        )
+        has_safe = any(re.search(pattern, text, flags=re.I) for pattern in safe_patterns)
+        has_risky = any(re.search(pattern, text, flags=re.I) for pattern in risky_patterns)
+        return has_safe and not has_risky
+
+    @staticmethod
+    def _apply_price_preference(
+        products: List[Dict[str, Any]],
+        search_plan: Optional[Dict[str, Any]] = None,
+    ) -> List[Dict[str, Any]]:
+        """按 SearchPlan 的价格偏好调整候选顺序。"""
+        if not products or not search_plan:
+            return products
+        preference = str(search_plan.get("price_preference") or "").strip()
+        if preference not in {"cheaper", "premium"}:
+            return products
+
+        def price_value(item: Dict[str, Any]) -> float:
+            try:
+                return float(item.get("base_price"))
+            except (TypeError, ValueError):
+                return float("inf") if preference == "cheaper" else float("-inf")
+
+        return sorted(products, key=price_value, reverse=(preference == "premium"))
 
     @staticmethod
     def _prefer_closest_fallbacks(
@@ -764,9 +1096,9 @@ class ToolChatProductSelectionMixin:
                 seen_ids.add(product_id)
                 selected.append(item)
                 if len(selected) >= limit:
-                    return selected
+                    return cls._apply_price_preference(selected, search_plan)
 
-        return selected
+        return cls._apply_price_preference(selected, search_plan)
 
     @staticmethod
     def _build_deterministic_final_reply(
@@ -860,6 +1192,27 @@ class ToolChatProductSelectionMixin:
         selected_context = ToolChatProductSelectionMixin._build_selected_products_context(selected_products)
         purchase_intent = (search_plan or {}).get("purchase_intent") or "purchase_ready"
         purchase_intent_reason = (search_plan or {}).get("purchase_intent_reason") or "未提供购买阶段说明"
+        is_followup = bool((search_plan or {}).get("is_followup"))
+        context_carryover = str((search_plan or {}).get("context_carryover") or "").strip()
+        excluded_brands = [
+            str(item).strip()
+            for item in (search_plan or {}).get("excluded_brands", [])
+            if str(item).strip()
+        ]
+        excluded_terms = [
+            str(item).strip()
+            for item in [
+                *((search_plan or {}).get("excluded_terms") or []),
+                *((search_plan or {}).get("excluded_attributes") or []),
+            ]
+            if str(item).strip()
+        ]
+        comparison_intent = bool((search_plan or {}).get("comparison_intent"))
+        comparison_dimensions = [
+            str(item).strip()
+            for item in (search_plan or {}).get("comparison_dimensions", [])
+            if str(item).strip()
+        ]
         if purchase_intent == "browsing":
             intent_guidance = (
                 "## 购买阶段口径\n"
@@ -872,6 +1225,34 @@ class ToolChatProductSelectionMixin:
                 "## 购买阶段口径\n"
                 "当前 purchase_intent=purchase_ready，用户有明确导购或购买倾向。保持清晰推荐优先级，"
                 "给出适配理由和取舍建议，但仍不要夸大商品事实。"
+            )
+        followup_guidance = ""
+        if is_followup:
+            followup_guidance = (
+                "\n## 多轮追问口径\n"
+                "用户当前问题是追问或补充条件。回复开头要自然承接上一轮需求，"
+                "再说明本轮新增筛选条件。"
+                f"历史承接摘要：{context_carryover or '按最近一轮商品需求继续筛选'}\n"
+            )
+        exclusion_guidance = ""
+        if excluded_brands or excluded_terms:
+            exclusion_guidance = (
+                "\n## 排除条件口径\n"
+                f"本轮已排除品牌：{excluded_brands or '无'}；已排除关键词/属性：{excluded_terms or '无'}。"
+                "回复中要简短说明已避开这些条件，且不要推荐或暗示清单外被排除商品。\n"
+            )
+        comparison_guidance = ""
+        if comparison_intent and 2 <= len(selected_products) <= 4:
+            dimensions = comparison_dimensions or ["品牌", "品类/规格", "价格", "核心卖点", "适合人群", "注意点", "推荐结论"]
+            comparison_guidance = (
+                "\n## 多商品对比口径\n"
+                "用户要求对比或在多款商品中做购买取舍。最终回复必须包含一个 Markdown 表格，"
+                "表头第一列为“维度”，后续列为各商品简称；每行对应一个对比维度。"
+                f"必须覆盖这些维度：{dimensions}。"
+                "表格必须使用 GitHub Flavored Markdown 管道表格格式：表格前后各留一个空行，"
+                "第二行必须是由 --- 组成的分隔行，例如“| 维度 | 商品A | 商品B |”下一行"
+                "“| --- | --- | --- |”；不要把表格放进代码块。"
+                "表格后用 1-2 句话给出选择建议。\n"
             )
         final_guidance = (
             "你现在进入最终导购推荐阶段。\n"
@@ -891,6 +1272,9 @@ class ToolChatProductSelectionMixin:
             "12) 如果存在 direct 商品，优先推荐 direct 商品，不要混入 fallback 商品；"
             "13) product_id、sku_id、source、recommendation_role、match_type、match_note 是内部核对字段，除非用户明确询问，不要在对外回复里展示。\n\n"
             f"{intent_guidance}\n"
+            f"{followup_guidance}"
+            f"{exclusion_guidance}"
+            f"{comparison_guidance}"
             f"购买阶段判断依据：{purchase_intent_reason}\n\n"
             f"需求分析摘要：\n{analysis_text or '（无）'}\n\n"
             f"{selected_context}"

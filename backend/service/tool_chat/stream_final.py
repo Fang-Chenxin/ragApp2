@@ -86,9 +86,102 @@ class ToolChatStreamFinalMixin:
             yield {"type": "content", "content": preliminary_reply, "timings": None}
 
     @staticmethod
+    def _product_mention_terms(product: Dict[str, Any]) -> Dict[str, List[str]]:
+        """提取商品可被用户自然提及的品牌词和标题片段，不内置业务停用词。"""
+        title = str(product.get("title") or "")
+        brand = str(product.get("brand") or "")
+        brand_terms = [brand] if brand else []
+        title_terms: List[str] = []
+        for token in re.findall(r'[\u4e00-\u9fff]{2,}|[a-zA-Z][a-zA-Z0-9+\\-]{1,}', title):
+            value = token.strip()
+            if len(value) >= 2:
+                title_terms.append(value)
+        return {
+            "brand_terms": brand_terms,
+            "title_terms": title_terms,
+        }
+
+    @staticmethod
+    def _build_candidate_distinctive_terms(candidate_products: List[Dict[str, Any]]) -> Dict[str, set[str]]:
+        """基于本轮候选集合动态计算每个商品的区分性标题词。"""
+        token_to_products: Dict[str, set[str]] = {}
+        product_terms: Dict[str, set[str]] = {}
+        for product in candidate_products:
+            product_id = str(product.get("product_id") or "").strip()
+            if not product_id:
+                continue
+            terms = {
+                term.lower()
+                for term in ToolChatStreamFinalMixin._product_mention_terms(product).get("title_terms", [])
+                if term
+            }
+            product_terms[product_id] = terms
+            for term in terms:
+                token_to_products.setdefault(term, set()).add(product_id)
+
+        distinctive: Dict[str, set[str]] = {}
+        total_products = max(1, len([p for p in candidate_products if p.get("product_id")]))
+        for product_id, terms in product_terms.items():
+            distinctive[product_id] = {
+                term
+                for term in terms
+                # 只保留能区分当前候选的词；候选极少时，出现在半数以上商品里的词也不算区分词。
+                if len(token_to_products.get(term, set())) == 1
+                or (len(term) >= 4 and len(token_to_products.get(term, set())) <= max(1, total_products // 3))
+            }
+        return distinctive
+
+    @staticmethod
+    def _reply_mentions_product(
+        reply_lower: str,
+        product: Dict[str, Any],
+        selected_brands: set[str],
+        distinctive_terms: Dict[str, set[str]],
+    ) -> bool:
+        """判断回复是否提到某个候选商品。"""
+        keywords = ToolChatStreamFinalMixin._product_mention_terms(product)
+        brand_terms = [term for term in keywords["brand_terms"] if term]
+        product_id = str(product.get("product_id") or "").strip()
+        title_terms = [term for term in distinctive_terms.get(product_id, set()) if term]
+
+        brand_hit = any(term.lower() in reply_lower for term in brand_terms)
+        title_hit = any(term.lower() in reply_lower for term in title_terms)
+        # 非白名单独有品牌一旦被提及，通常就是泄漏；同品牌多 SKU 则要求再命中标题关键词。
+        if brand_hit and not any(term.lower() in selected_brands for term in brand_terms):
+            return True
+        return brand_hit and title_hit or title_hit
+
+    @staticmethod
+    def _mentioned_non_whitelisted_products(
+        reply_text: str,
+        selected_products: List[Dict[str, Any]],
+        candidate_products: List[Dict[str, Any]],
+    ) -> List[Dict[str, Any]]:
+        """查找直接回复中提到但不在最终白名单内的候选商品。"""
+        if not reply_text or not candidate_products:
+            return []
+
+        selected_ids = {str(item.get("product_id") or "") for item in selected_products}
+        selected_brands = {str(item.get("brand") or "").lower() for item in selected_products if item.get("brand")}
+        reply_lower = reply_text.lower()
+        distinctive_terms = ToolChatStreamFinalMixin._build_candidate_distinctive_terms(candidate_products)
+        leaked: List[Dict[str, Any]] = []
+        seen_ids: set[str] = set()
+
+        for product in candidate_products:
+            product_id = str(product.get("product_id") or "").strip()
+            if not product_id or product_id in selected_ids or product_id in seen_ids:
+                continue
+            if ToolChatStreamFinalMixin._reply_mentions_product(reply_lower, product, selected_brands, distinctive_terms):
+                leaked.append(product)
+                seen_ids.add(product_id)
+        return leaked
+
+    @staticmethod
     def _direct_reply_covers_products(
         reply_text: str,
         selected_products: List[Dict[str, Any]],
+        candidate_products: List[Dict[str, Any]] | None = None,
     ) -> bool:
         """检查 LLM 直接回复是否已覆盖所有 primary 目标商品。
 
@@ -96,8 +189,21 @@ class ToolChatStreamFinalMixin:
         - 只校验 role=primary 的商品（核心推荐），supporting/fallback 允许不提及
         - 从标题中提取品牌名和关键词（≥2字的中文词或英文单词），命中任一即可
         - 所有 primary 商品都被覆盖时返回 True
+        - 如果回复提到候选池中非白名单商品，返回 False，触发受约束最终回复
         """
         if not reply_text or not selected_products:
+            return False
+
+        leaked_products = ToolChatStreamFinalMixin._mentioned_non_whitelisted_products(
+            reply_text,
+            selected_products,
+            candidate_products or [],
+        )
+        if leaked_products:
+            logger.debug(
+                "      直接回复提到非白名单商品: %s",
+                [item.get("product_id") for item in leaked_products],
+            )
             return False
 
         primary_products = [
@@ -108,26 +214,27 @@ class ToolChatStreamFinalMixin:
             return False
 
         reply_lower = reply_text.lower()
+        distinctive_terms = ToolChatStreamFinalMixin._build_candidate_distinctive_terms([
+            *(candidate_products or []),
+            *selected_products,
+        ])
 
         for product in primary_products:
-            title = product.get("title", "")
-            brand = product.get("brand", "")
-            # 用品牌名或标题关键词匹配
-            keywords = []
-            if brand:
-                keywords.append(brand)
-            # 从标题提取 ≥2字的中文词 和 英文词
-            for token in re.findall(r'[\u4e00-\u9fff]{2,}|[a-zA-Z][a-zA-Z0-9]+', title):
-                if len(token) >= 2:
-                    keywords.append(token)
-            if not keywords:
+            keywords = ToolChatStreamFinalMixin._product_mention_terms(product)
+            brand_terms = [term for term in keywords["brand_terms"] if term]
+            title_terms = [
+                term
+                for term in distinctive_terms.get(str(product.get("product_id") or ""), set())
+                if term
+            ]
+            if not brand_terms and not title_terms:
                 continue
-            if any(kw.lower() in reply_lower for kw in keywords):
+            if any(term.lower() in reply_lower for term in brand_terms + title_terms):
                 continue
             # 这个 primary 商品未被覆盖
             logger.debug(
                 "      直接回复未覆盖 primary 商品: product_id=%s | 品牌=%s | 关键词=%s",
-                product.get("product_id"), brand, keywords[:5],
+                product.get("product_id"), product.get("brand"), [*brand_terms, *title_terms][:5],
             )
             return False
         return True
@@ -152,13 +259,39 @@ class ToolChatStreamFinalMixin:
         self._stream_update_tool_timings(ctx)
 
         final_content = assistant_message.content or ""
-        reply_covers_targets = self._direct_reply_covers_products(final_content, selected_products)
-        needs_constrained_final = bool(selected_product_ids) and not reply_covers_targets
+        direct_candidate_products = self._merge_selected_products(
+            self._extract_products_from_rag_sources(ctx.rag_sources),
+            ctx.direct_selected_products,
+            self._extract_selected_products(ctx.tool_results, ctx.tool_call_order),
+            limit=20,
+        )
+        mentioned_non_whitelisted = self._mentioned_non_whitelisted_products(
+            final_content,
+            selected_products,
+            direct_candidate_products,
+        )
+        reply_covers_targets = self._direct_reply_covers_products(
+            final_content,
+            selected_products,
+            direct_candidate_products,
+        )
+        comparison_requires_constrained_final = (
+            bool((ctx.search_plan or {}).get("comparison_intent"))
+            and 2 <= len(selected_products) <= 4
+        )
+        needs_constrained_final = bool(selected_product_ids) and (
+            not reply_covers_targets
+            or comparison_requires_constrained_final
+        )
         trace_chunk = self._debug_chunk(
             "organizing_results",
             "最终回复整理检查",
             mode="assistant_direct_reply",
             selected_product_ids=selected_product_ids,
+            mentioned_non_whitelisted_product_ids=[item.get("product_id") for item in mentioned_non_whitelisted],
+            mentioned_non_whitelisted_products=mentioned_non_whitelisted,
+            comparison_intent=bool((ctx.search_plan or {}).get("comparison_intent")),
+            comparison_requires_constrained_final=comparison_requires_constrained_final,
             needs_constrained_final=needs_constrained_final,
             reply_covers_targets=reply_covers_targets,
         )
@@ -166,8 +299,8 @@ class ToolChatStreamFinalMixin:
         yield trace_chunk
 
         if needs_constrained_final:
-            # LLM 直接回复未覆盖全部 primary 目标商品，需要再生成一次受清单约束的最终回复。
-            logger.debug("      存在目标商品，直接回复未完全覆盖，基于数据库目标清单流式生成最终回复")
+            # LLM 直接回复未满足商品白名单或结构化对比要求，需要再生成一次受清单约束的最终回复。
+            logger.debug("      存在目标商品，直接回复未覆盖或需结构化对比，基于数据库目标清单流式生成最终回复")
             final_messages = self._build_final_recommendation_messages(
                 ctx.final_system_prompt,
                 ctx.analysis_text.strip(),

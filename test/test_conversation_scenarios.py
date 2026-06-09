@@ -203,6 +203,53 @@ SCENARIOS = [
             "forbidden_categories": ["食品饮料", "美妆护肤"],
         },
     },
+    {
+        "id": "multi_turn_cheaper",
+        "name": "多轮对话 - 更便宜的追问",
+        "query": "再便宜点的呢？",
+        "history": [
+            {"role": "user", "content": "推荐跑步鞋"},
+            {"role": "assistant", "content": "可以先看 Nike Air Zoom Pegasus 41，参考价899元，品类：服饰运动/跑步鞋。"},
+        ],
+        "expect": {
+            "min_products": 1,
+            "allowed_categories": ["服饰运动"],
+            "forbidden_categories": ["食品饮料", "数码电子", "美妆护肤"],
+        },
+    },
+    {
+        "id": "exclude_nike",
+        "name": "反选排除 - 除了耐克",
+        "query": "除了耐克还有什么跑步鞋或运动装备？",
+        "expect": {
+            "min_products": 1,
+            "allowed_categories": ["服饰运动"],
+            "forbidden_categories": ["食品饮料", "数码电子", "美妆护肤"],
+            "forbidden_brands": ["耐克", "Nike"],
+        },
+    },
+    {
+        "id": "exclude_alcohol_sunscreen",
+        "name": "反选排除 - 不含酒精防晒",
+        "query": "不要含酒精的防晒，有什么推荐？",
+        "expect": {
+            "min_products": 1,
+            "allowed_categories": ["美妆护肤"],
+            "forbidden_categories": ["食品饮料", "数码电子", "服饰运动"],
+            "forbidden_product_ids": ["p_beauty_010"],
+        },
+    },
+    {
+        "id": "compare_sunscreens",
+        "name": "多商品对比 - 防晒对比",
+        "query": "对比两款防晒，重点看价格和成分",
+        "expect": {
+            "min_products": 2,
+            "allowed_categories": ["美妆护肤"],
+            "forbidden_categories": ["食品饮料", "数码电子", "服饰运动"],
+            "reply_should_contain": ["|"],
+        },
+    },
 ]
 
 
@@ -265,6 +312,19 @@ def _check_expectations(
             cat = p.get("category", "")
             if cat in forbidden_categories:
                 errors.append(f"商品 {p.get('product_id')} 命中禁止类目 '{cat}'")
+
+    forbidden_brands = expect.get("forbidden_brands", [])
+    if forbidden_brands and selected_products:
+        for p in selected_products:
+            brand = p.get("brand", "")
+            if any(item.lower() in brand.lower() for item in forbidden_brands):
+                errors.append(f"商品 {p.get('product_id')} 命中禁止品牌 '{brand}'")
+
+    forbidden_product_ids = set(expect.get("forbidden_product_ids", []))
+    if forbidden_product_ids and selected_products:
+        for p in selected_products:
+            if p.get("product_id") in forbidden_product_ids:
+                errors.append(f"商品 {p.get('product_id')} 命中禁止商品")
 
     # 检查回复内容
     reply_should_contain = expect.get("reply_should_contain", [])

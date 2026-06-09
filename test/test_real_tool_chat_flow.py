@@ -240,8 +240,10 @@ def _print_chunk(chunk: dict[str, Any]) -> None:
                 print(f"  LLM在工具调用轮中已直接给出回复文本", flush=True)
                 print(f"  回复中引用的商品ID: {drids or '(无)'}", flush=True)
                 print(f"  应引用的商品ID: {sids}", flush=True)
+                if chunk.get("comparison_requires_constrained_final") is not None:
+                    print(f"  对比需求需结构化回复: {chunk.get('comparison_requires_constrained_final')}", flush=True)
                 if nc:
-                    print(f"  → 回复未引用选中商品ID，需重新生成", flush=True)
+                    print(f"  → 回复未覆盖目标商品或需结构化整理，重新生成", flush=True)
                 else:
                     print(f"  → 回复已包含选中商品ID，直接使用", flush=True)
             else:

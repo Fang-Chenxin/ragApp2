@@ -254,6 +254,34 @@ class SQLiteProductSearchService:
             "missing_product_ids": [product_id for product_id in clean_ids if product_id not in by_id],
         }
 
+    def get_product_search_docs_by_ids(self, product_ids: List[str]) -> Dict[str, str]:
+        """按 product_id 读取全文检索文档，用于最终候选的否定条件过滤。"""
+        clean_ids: List[str] = []
+        seen: set[str] = set()
+        for product_id in product_ids:
+            value = str(product_id or "").strip()
+            if not value or value in seen:
+                continue
+            seen.add(value)
+            clean_ids.append(value)
+
+        if not clean_ids or not self.db_available:
+            return {}
+
+        placeholders = ",".join(["?"] * len(clean_ids))
+        sql = f"SELECT product_id, combined_text FROM product_search_docs WHERE product_id IN ({placeholders})"
+        conn: Optional[sqlite3.Connection] = None
+        try:
+            conn = sqlite3.connect(self.db_path)
+            rows = conn.execute(sql, clean_ids).fetchall()
+            return {str(product_id): str(combined_text or "") for product_id, combined_text in rows}
+        except Exception as e:
+            logger.warning("读取商品全文检索文档失败: %s", e)
+            return {}
+        finally:
+            if conn is not None:
+                conn.close()
+
     def get_default_sku_ids_by_product_ids(self, product_ids: List[str]) -> dict[str, str]:
         """按商品基础价匹配默认 SKU；无同价 SKU 时返回该商品首个 SKU。"""
         clean_ids: List[str] = []

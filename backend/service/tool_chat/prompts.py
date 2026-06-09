@@ -104,6 +104,16 @@ class ToolChatPromptMixin:
                     "必须优先使用这些值，不要自行推断。\n"
                     "6. purchase_intent 用于判断用户购买阶段：随便看看、看看有没有、了解一下、有什么可选、先看看等为 browsing；"
                     "想买、我要、需要、下单、预算、给我推荐一款、急用等为 purchase_ready；无法判断时默认 purchase_ready。\n\n"
+                    "7. 如果用户在追问上一轮，如“再便宜点的呢”“上面那几款”“换个牌子”“这两款对比”，"
+                    "is_followup 必须为 true，并把需要继承的商品/品类/场景写入 context_carryover，query_text 要结合历史补全成可检索商品词。\n"
+                    "8. 如果用户表达否定或排除，如“不要含酒精的”“除了耐克”“不考虑Nike”，"
+                    "必须把品牌写入 excluded_brands，把成分/属性/关键词写入 excluded_terms 或 excluded_attributes；"
+                    "query_text 不要包含被排除品牌，避免把排除品牌当作正向品牌过滤。\n"
+                    "9. 如果用户要求对比 2-3 款商品，或问“哪一种/哪一款/买哪种更划算/哪个性价比高”这类多候选取舍问题，"
+                    "comparison_intent=true，并输出 comparison_dimensions；"
+                    "用户没点名维度时默认包含品牌、品类/规格、价格、核心卖点、适合人群、注意点、推荐结论。\n"
+                    "10. 如果用户说“便宜点/更便宜/平价/性价比”，price_preference=\"cheaper\"；"
+                    "如果用户说“贵点/高端/旗舰/升级”，price_preference=\"premium\"；否则为空字符串。\n\n"
                     "输出 JSON schema：\n"
                     "{\n"
                     "  \"target_product\": \"用户真正要找的商品\",\n"
@@ -115,6 +125,14 @@ class ToolChatPromptMixin:
                     "  \"acceptable_fallback_terms\": [\"可接受替代词\"],\n"
                     "  \"allowed_categories\": [\"允许类目\"],\n"
                     "  \"forbidden_categories\": [\"禁止类目\"],\n"
+                    "  \"excluded_brands\": [\"要排除的品牌\"],\n"
+                    "  \"excluded_terms\": [\"要排除的关键词或成分\"],\n"
+                    "  \"excluded_attributes\": [\"要排除的属性描述\"],\n"
+                    "  \"is_followup\": true,\n"
+                    "  \"context_carryover\": \"从历史继承的需求摘要\",\n"
+                    "  \"comparison_intent\": false,\n"
+                    "  \"comparison_dimensions\": [\"对比维度\"],\n"
+                    "  \"price_preference\": \"cheaper、premium、same、balanced 或空字符串\",\n"
                     "  \"fallback_notice_required\": true,\n"
                     "  \"purchase_intent\": \"browsing 或 purchase_ready\",\n"
                     "  \"purchase_intent_reason\": \"一句话说明购买阶段判断依据\",\n"
@@ -151,7 +169,10 @@ class ToolChatPromptMixin:
             "2. 如果用户的问题引用了对话历史中的商品（如'这几个''上面的''那款''这个牌子'），"
             "   你必须从上方「最近对话中的商品信息」中提取品牌名、商品名等关键词作为 text 参数。\n"
             "3. 如果用户的需求是场景型或目标型，优先使用扩展后的场景关键词发起查询，而不是只搜原始名词。\n"
-            "4. 如果第一次检索没有直接命中，不要结束对话，要立即转向次相关品类重新组织推荐。"
+            "4. 如果用户说“除了/不要/不考虑/排除”某品牌或成分，工具查询词不要把被排除词当作正向品牌或关键词；"
+            "   可以查询同类商品，再由最终白名单过滤排除项。\n"
+            "5. 如果用户说“再便宜点/更便宜/平价”，优先查询同一历史品类中价格更低、性价比更高的商品。\n"
+            "6. 如果第一次检索没有直接命中，不要结束对话，要立即转向次相关品类重新组织推荐。"
         )
 
     @staticmethod
@@ -187,7 +208,8 @@ class ToolChatPromptMixin:
             "3. 如果 RAG 未命中但工具命中了商品，要正常基于商品数据库结果给出推荐。\n"
             "4. 如果工具和知识库信息冲突，以工具结果中的结构化商品信息为准。\n"
             "5. 最终回答要像导购：先一句话概括用户需求，再给出 3-5 个推荐方向或具体商品，并说明每个推荐为什么相关。\n"
-            "6. 不要编造工具结果之外的商品；product_id、sku_id 等内部字段除非用户明确询问，不要在对外回复里展示。"
+            "6. 如果用户是在追问，要先承接上一轮需求，再说明本轮新增条件；如果用户有排除条件，要明确说已避开哪些品牌/成分/关键词。\n"
+            "7. 不要编造工具结果之外的商品；product_id、sku_id 等内部字段除非用户明确询问，不要在对外回复里展示。"
         )
 
 
@@ -216,10 +238,17 @@ class ToolChatPromptMixin:
                     for item in lookup.get("items") or []:
                         title = str(item.get("title") or "").strip()
                         brand = str(item.get("brand") or "").strip()
+                        category = str(item.get("category") or "").strip()
+                        sub_category = str(item.get("sub_category") or "").strip()
+                        price = item.get("base_price")
                         if title:
                             product_mentions.append(f"名称: {title}")
                         if brand:
                             product_mentions.append(f"品牌: {brand}")
+                        if category or sub_category:
+                            product_mentions.append(f"品类: {category}/{sub_category}".rstrip("/"))
+                        if price is not None:
+                            product_mentions.append(f"价格: {price}")
 
             brands = re.findall(
                 r'(华为|小米|苹果|三星|OPPO|vivo|荣耀|联想|戴尔|惠普|'
@@ -231,11 +260,17 @@ class ToolChatPromptMixin:
             )
 
             backtick_names = re.findall(r'`([^`]{2,50})`', content)
+            price_mentions = re.findall(r'(?:￥|¥)?\s*(\d+(?:\.\d+)?)\s*元', content)
+            category_mentions = re.findall(r'(食品饮料|数码电子|美妆护肤|服饰运动)[/／]?(平板电脑|笔记本电脑|智能手机|真无线耳机|跑步鞋|短袖T恤|速干T恤|防晒|面霜|精华|唇釉|咖啡|酸奶|坚果/零食)?', content)
 
             for brand in set(brands):
                 product_mentions.append(f"品牌: {brand}")
             for name in backtick_names[:5]:
                 product_mentions.append(f"名称: {name}")
+            for price in price_mentions[:3]:
+                product_mentions.append(f"价格: {price}")
+            for category, sub_category in category_mentions[:3]:
+                product_mentions.append(f"品类: {category}/{sub_category}" if sub_category else f"品类: {category}")
 
             if len(product_mentions) >= 6:
                 break

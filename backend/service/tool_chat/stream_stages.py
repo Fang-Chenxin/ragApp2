@@ -45,13 +45,18 @@ class ToolChatStreamStagesMixin:
             if not plan:
                 return None, round(time.perf_counter() - plan_start, 3), "SearchPlan JSON 解析失败"
             logger.info(
-                "[SearchPlan] query=%s | target=%s | query_text=%s | direct_terms=%s | fallback_terms=%s | allowed=%s",
+                "[SearchPlan] query=%s | target=%s | query_text=%s | direct_terms=%s | fallback_terms=%s | allowed=%s | excluded_brands=%s | excluded_terms=%s | is_followup=%s | comparison=%s | price_preference=%s",
                 ctx.user_query,
                 plan.get("target_product"),
                 plan.get("query_text"),
                 plan.get("direct_terms"),
                 plan.get("acceptable_fallback_terms"),
                 plan.get("allowed_categories"),
+                plan.get("excluded_brands"),
+                plan.get("excluded_terms"),
+                plan.get("is_followup"),
+                plan.get("comparison_intent"),
+                plan.get("price_preference"),
             )
             return plan, round(time.perf_counter() - plan_start, 3), None
         except Exception as exc:
