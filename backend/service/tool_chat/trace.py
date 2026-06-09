@@ -239,6 +239,9 @@ class ToolChatTraceMixin:
                 lines.append(f"  可接受替代: {plan.get('acceptable_fallback_terms') or []}")
                 lines.append(f"  允许类目: {plan.get('allowed_categories') or []}")
                 lines.append(f"  禁止类目: {plan.get('forbidden_categories') or []}")
+                lines.append(f"  购买意图: {plan.get('purchase_intent') or chunk.get('purchase_intent') or 'purchase_ready'}")
+                if plan.get("purchase_intent_reason") or chunk.get("purchase_intent_reason"):
+                    lines.append(f"  判断依据: {plan.get('purchase_intent_reason') or chunk.get('purchase_intent_reason')}")
 
         elif phase == "tool_result":
             status = "成功" if chunk.get("ok") else f"失败: {chunk.get('error')}"
@@ -275,6 +278,10 @@ class ToolChatTraceMixin:
                     lines.append(f"      SearchPlan理由: {call.get('search_plan_reason')}")
 
         elif phase == "selected_products":
+            if chunk.get("purchase_intent"):
+                lines.append(f"  购买意图: {chunk.get('purchase_intent')}")
+            if chunk.get("purchase_intent_reason"):
+                lines.append(f"  判断依据: {chunk.get('purchase_intent_reason')}")
             lines.append(f"  RAG候选: {chunk.get('rag_selected_product_ids') or '(无)'}")
             lines.append(f"  原始召回候选: {chunk.get('direct_selected_product_ids') or '(无)'}")
             lines.append(f"  工具召回候选: {chunk.get('tool_selected_product_ids') or '(无)'}")

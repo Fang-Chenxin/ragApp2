@@ -173,6 +173,54 @@ class CategoryValidationTest(unittest.TestCase):
         self.assertEqual(plan.get("target_sub_category"), "")
 
 
+class PurchaseIntentTest(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        sqlite_product_search_service.initialize()
+
+    def test_search_plan_infers_browsing_and_purchase_ready_intents(self):
+        browsing_plan = ToolChatService._normalize_search_plan(
+            {"target_product": "跑步耳机", "query_text": "跑步耳机"},
+            "随便看看有没有适合跑步的耳机",
+        )
+        purchase_plan = ToolChatService._normalize_search_plan(
+            {"target_product": "跑步耳机", "query_text": "跑步耳机"},
+            "我想买个跑步耳机",
+        )
+        recommend_plan = ToolChatService._normalize_search_plan(
+            {"target_product": "防晒霜", "query_text": "防晒霜"},
+            "推荐一款防晒霜",
+        )
+        invalid_plan = ToolChatService._normalize_search_plan(
+            {"target_product": "防晒霜", "query_text": "防晒霜", "purchase_intent": "maybe"},
+            "随便看看防晒霜",
+        )
+
+        self.assertEqual(browsing_plan.get("purchase_intent"), "browsing")
+        self.assertEqual(purchase_plan.get("purchase_intent"), "purchase_ready")
+        self.assertEqual(recommend_plan.get("purchase_intent"), "purchase_ready")
+        self.assertEqual(invalid_plan.get("purchase_intent"), "purchase_ready")
+
+    def test_browsing_final_prompt_uses_light_recommendation_guidance(self):
+        messages = ToolChatService._build_final_recommendation_messages(
+            "你是导购助手。",
+            "用户在探索跑步耳机。",
+            [],
+            "随便看看有没有适合跑步的耳机",
+            [],
+            {
+                "purchase_intent": "browsing",
+                "purchase_intent_reason": "用户表达为先浏览、了解或看看可选项",
+            },
+        )
+        system_content = messages[0]["content"]
+
+        self.assertIn("purchase_intent=browsing", system_content)
+        self.assertIn("轻推荐、不催买", system_content)
+        self.assertIn("可以先看这几个方向", system_content)
+        self.assertIn("对比建议", system_content)
+
+
 class ToolChatStreamPipelineTest(unittest.IsolatedAsyncioTestCase):
     async def test_final_stage_streams_text_before_product_cards(self):
         class FakeLLM:

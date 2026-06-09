@@ -303,6 +303,8 @@ class ToolChatStreamStagesMixin:
             elapsed=ctx.search_plan_elapsed,
             error=ctx.search_plan_error,
             search_plan=ctx.search_plan,
+            purchase_intent=(ctx.search_plan or {}).get("purchase_intent"),
+            purchase_intent_reason=(ctx.search_plan or {}).get("purchase_intent_reason"),
         )
         self._log_trace_chunk(trace_chunk)
         yield trace_chunk

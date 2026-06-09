@@ -40,7 +40,27 @@ from service.product_search.engine import strip_intent_words
 def load_regression_cases() -> list[dict]:
     """加载回归测试用例。"""
     path = _ROOT / "ecommerce_agent_dataset" / "search_semantics" / "regression_cases.json"
-    return json.loads(path.read_text(encoding="utf-8"))
+    cases = json.loads(path.read_text(encoding="utf-8"))
+    cases.extend(
+        [
+            {
+                "id": "intent_browsing_running_earphones",
+                "query": "随便看看有没有适合跑步的耳机",
+                "expect": {"purchase_intent": "browsing"},
+            },
+            {
+                "id": "intent_purchase_running_earphones",
+                "query": "我想买个跑步耳机",
+                "expect": {"purchase_intent": "purchase_ready"},
+            },
+            {
+                "id": "intent_purchase_sunscreen",
+                "query": "推荐一款防晒霜",
+                "expect": {"purchase_intent": "purchase_ready"},
+            },
+        ]
+    )
+    return cases
 
 
 def check_case(case: dict, verbose: bool = False) -> dict:
@@ -89,10 +109,15 @@ def check_case(case: dict, verbose: bool = False) -> dict:
         "direct_terms": plan.get("direct_terms", []) if plan else [],
         "allowed_categories": plan.get("allowed_categories", []) if plan else [],
         "forbidden_categories": plan.get("forbidden_categories", []) if plan else [],
+        "purchase_intent": plan.get("purchase_intent", "") if plan else "",
     }
 
     if verbose:
         print(f"    plan corrected: {json.dumps(details['plan_after_correction'], ensure_ascii=False)}")
+
+    expected_intent = expect.get("purchase_intent")
+    if expected_intent and plan and plan.get("purchase_intent") != expected_intent:
+        errors.append(f"purchase_intent 期望 '{expected_intent}'，实际 '{plan.get('purchase_intent')}'")
 
     # 3. 检查 forbidden_categories 约束
     expected_forbidden = expect.get("forbidden_categories", [])
@@ -196,6 +221,7 @@ def check_case_live(case: dict, verbose: bool = False) -> dict:
         "direct_terms": plan.get("direct_terms", []) if plan else [],
         "allowed_categories": plan.get("allowed_categories", []) if plan else [],
         "forbidden_categories": plan.get("forbidden_categories", []) if plan else [],
+        "purchase_intent": plan.get("purchase_intent", "") if plan else "",
     }
     if verbose:
         print(f"\n    ── 第1步：SearchPlan 构建（语义表修正后）──")
@@ -203,6 +229,11 @@ def check_case_live(case: dict, verbose: bool = False) -> dict:
         print(f"    direct_terms: {plan.get('direct_terms', [])}")
         print(f"    allowed_categories: {plan.get('allowed_categories', [])}")
         print(f"    forbidden_categories: {plan.get('forbidden_categories', [])}")
+        print(f"    purchase_intent: {plan.get('purchase_intent', '')}")
+
+    expected_intent = expect.get("purchase_intent")
+    if expected_intent and plan and plan.get("purchase_intent") != expected_intent:
+        errors.append(f"purchase_intent 期望 '{expected_intent}'，实际 '{plan.get('purchase_intent')}'")
 
     # ── 第2步：SQLite 真实召回 ──
     search_result = sqlite_product_search_service.search_by_rule_parsed_text(query, limit=10)

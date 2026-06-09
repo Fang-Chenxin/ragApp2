@@ -35,6 +35,11 @@ class ToolChatProductSelectionMixin:
                 return [str(item).strip() for item in value if str(item).strip()]
             return []
 
+        purchase_intent, purchase_intent_reason = ToolChatProductSelectionMixin._normalize_purchase_intent(
+            text_value("purchase_intent"),
+            text_value("purchase_intent_reason"),
+            user_query,
+        )
         plan = {
             "target_product": text_value("target_product") or user_query.strip(),
             "target_category": text_value("target_category"),
@@ -46,6 +51,8 @@ class ToolChatProductSelectionMixin:
             "allowed_categories": list_value("allowed_categories"),
             "forbidden_categories": list_value("forbidden_categories"),
             "fallback_notice_required": bool(raw_plan.get("fallback_notice_required", True)),
+            "purchase_intent": purchase_intent,
+            "purchase_intent_reason": purchase_intent_reason,
             "reason": text_value("reason"),
         }
         if not plan["direct_terms"] and plan["target_product"]:
@@ -53,6 +60,40 @@ class ToolChatProductSelectionMixin:
         # 用语义表修正 LLM 输出，确保品类值和约束来自业务知识而非 LLM 猜测
         plan = ToolChatProductSelectionMixin._apply_semantic_corrections(plan, user_query)
         return plan
+
+    @staticmethod
+    def _normalize_purchase_intent(raw_intent: str, raw_reason: str = "", user_query: str = "") -> tuple[str, str]:
+        """标准化购买阶段；模型缺失或非法时用规则兜底。"""
+        intent = (raw_intent or "").strip().lower()
+        if intent in {"browsing", "purchase_ready"}:
+            return intent, raw_reason or ("用户表达为探索了解" if intent == "browsing" else "用户表达为明确导购需求")
+        if intent:
+            return "purchase_ready", raw_reason or "模型返回了非法购买阶段，按明确导购需求兜底"
+
+        inferred_intent, inferred_reason = ToolChatProductSelectionMixin._infer_purchase_intent_from_query(user_query)
+        return inferred_intent, raw_reason or inferred_reason
+
+    @staticmethod
+    def _infer_purchase_intent_from_query(user_query: str) -> tuple[str, str]:
+        """从用户原话确定性推断“随便看看”或“明确购买倾向”。"""
+        query = re.sub(r"\s+", "", user_query or "")
+        if not query:
+            return "purchase_ready", "未提供明确浏览信号，默认按明确导购需求处理"
+
+        purchase_ready_patterns = (
+            "想买", "我要", "我想要", "需要", "急用", "下单", "预算", "多少钱", "价位",
+            "给我推荐一款", "推荐一款", "推荐一个", "买个", "买一", "入手", "购入",
+        )
+        browsing_patterns = (
+            "随便看看", "先看看", "看看有没有", "看看有没", "了解一下", "了解下",
+            "有什么可选", "有哪些可选", "有什么选择", "有哪些选择", "看一下", "看下",
+        )
+
+        if any(pattern in query for pattern in purchase_ready_patterns):
+            return "purchase_ready", "用户表达了购买、预算、下单或明确推荐诉求"
+        if any(pattern in query for pattern in browsing_patterns):
+            return "browsing", "用户表达为先浏览、了解或看看可选项"
+        return "purchase_ready", "未出现明确浏览信号，默认按明确导购需求处理"
 
     @staticmethod
     def _apply_semantic_corrections(plan: Dict[str, Any], user_query: str) -> Dict[str, Any]:
@@ -813,9 +854,25 @@ class ToolChatProductSelectionMixin:
         selected_products: List[Dict[str, Any]],
         user_query: str,
         conversation_history: Optional[List[Dict[str, str]]] = None,
+        search_plan: Optional[Dict[str, Any]] = None,
     ) -> List[Dict[str, str]]:
         """构造最终推荐 LLM 消息，强约束只能推荐已校验目标商品。"""
         selected_context = ToolChatProductSelectionMixin._build_selected_products_context(selected_products)
+        purchase_intent = (search_plan or {}).get("purchase_intent") or "purchase_ready"
+        purchase_intent_reason = (search_plan or {}).get("purchase_intent_reason") or "未提供购买阶段说明"
+        if purchase_intent == "browsing":
+            intent_guidance = (
+                "## 购买阶段口径\n"
+                "当前 purchase_intent=browsing，用户更像是在随便看看或探索了解。回复时仍正常给出商品和对比建议，"
+                "但要采用轻推荐、不催买的语气，例如“可以先看这几个方向”“先帮你筛几款参考”。"
+                "重点说明适用场景、差异点和适合谁，不要使用“马上入手”“闭眼买”“强烈建议下单”等强成交话术。"
+            )
+        else:
+            intent_guidance = (
+                "## 购买阶段口径\n"
+                "当前 purchase_intent=purchase_ready，用户有明确导购或购买倾向。保持清晰推荐优先级，"
+                "给出适配理由和取舍建议，但仍不要夸大商品事实。"
+            )
         final_guidance = (
             "你现在进入最终导购推荐阶段。\n"
             "请基于前面的需求分析和内部目标商品清单，输出面向用户的最终推荐。\n"
@@ -833,6 +890,8 @@ class ToolChatProductSelectionMixin:
             "11) fallback 结尾不要说“这些都是同类商品/点心/直接可选”，只说“可作为搭配或替代参考”；"
             "12) 如果存在 direct 商品，优先推荐 direct 商品，不要混入 fallback 商品；"
             "13) product_id、sku_id、source、recommendation_role、match_type、match_note 是内部核对字段，除非用户明确询问，不要在对外回复里展示。\n\n"
+            f"{intent_guidance}\n"
+            f"购买阶段判断依据：{purchase_intent_reason}\n\n"
             f"需求分析摘要：\n{analysis_text or '（无）'}\n\n"
             f"{selected_context}"
         )

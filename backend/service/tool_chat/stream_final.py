@@ -38,6 +38,8 @@ class ToolChatStreamFinalMixin:
             selected_product_ids=selected_product_ids,
             selected_products=selected_products,
             search_plan=ctx.search_plan,
+            purchase_intent=(ctx.search_plan or {}).get("purchase_intent"),
+            purchase_intent_reason=(ctx.search_plan or {}).get("purchase_intent_reason"),
         )
         self._log_trace_chunk(trace_chunk)
         payloads = [trace_chunk]
@@ -172,6 +174,7 @@ class ToolChatStreamFinalMixin:
                 selected_products,
                 ctx.user_query,
                 ctx.conversation_history,
+                ctx.search_plan,
             )
 
             t_final = time.perf_counter()
@@ -257,6 +260,7 @@ class ToolChatStreamFinalMixin:
             selected_products,
             ctx.user_query,
             ctx.conversation_history,
+            ctx.search_plan,
         )
         trace_chunk = self._debug_chunk(
             "organizing_results",
