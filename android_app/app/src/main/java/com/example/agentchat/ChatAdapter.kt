@@ -23,6 +23,7 @@ import android.widget.ImageView
 import android.widget.LinearLayout
 import android.widget.TextView
 import android.widget.HorizontalScrollView
+import android.widget.FrameLayout
 import androidx.recyclerview.widget.RecyclerView
 import io.noties.markwon.Markwon
 import io.noties.markwon.ext.tables.TablePlugin
@@ -35,6 +36,7 @@ private fun TextView.keepSelectable() {
     setTextIsSelectable(true)
     isLongClickable = true
     linksClickable = false
+    setHorizontallyScrolling(false)
 }
 
 private data class MarkdownTable(
@@ -146,7 +148,7 @@ class ChatAdapter(private val messages: MutableList<ChatMessage>) : RecyclerView
     }
 
     inner class AssistantMessageViewHolder(itemView: View) : RecyclerView.ViewHolder(itemView) {
-        private val messageScroll: HorizontalScrollView = itemView.findViewById(R.id.assistantMessageScroll)
+        private val messageScroll: FrameLayout = itemView.findViewById(R.id.assistantMessageScroll)
         private val textView: TextView = itemView.findViewById(R.id.assistantMessageText)
         private val structuredContent: LinearLayout = itemView.findViewById(R.id.assistantStructuredContent)
         private val timingsText: TextView = itemView.findViewById(R.id.assistantTimingsText)
@@ -249,7 +251,6 @@ class ChatAdapter(private val messages: MutableList<ChatMessage>) : RecyclerView
                 structuredContent.visibility = View.GONE
                 messageScroll.visibility = View.VISIBLE
                 textView.visibility = View.VISIBLE
-                configureWideTableTextWidth(content)
                 if (textView.text.toString() != content) {
                     textView.text = content
                 }
@@ -301,9 +302,7 @@ class ChatAdapter(private val messages: MutableList<ChatMessage>) : RecyclerView
         }
 
         private fun renderMarkdown(textView: TextView, markdown: String, allowWideTables: Boolean = false) {
-            if (allowWideTables) {
-                configureWideTableTextWidth(markdown)
-            }
+            if (allowWideTables) resetMessageTextWidth()
             val renderer = markwon ?: createMarkwon(itemView.context).also { markwon = it }
             val spanned = renderer.toMarkdown(markdown)
             val stripped = stripUrlSpans(spanned)
@@ -538,26 +537,11 @@ class ChatAdapter(private val messages: MutableList<ChatMessage>) : RecyclerView
             }
         }
 
-        private fun configureWideTableTextWidth(markdown: String) {
-            val targetWidth = if (containsMarkdownTable(markdown)) {
-                estimateTableWidthPx(markdown)
-            } else {
-                ViewGroup.LayoutParams.MATCH_PARENT
-            }
+        private fun resetMessageTextWidth() {
             val params = textView.layoutParams
-            if (params.width != targetWidth) {
-                params.width = targetWidth
+            if (params.width != ViewGroup.LayoutParams.MATCH_PARENT) {
+                params.width = ViewGroup.LayoutParams.MATCH_PARENT
                 textView.layoutParams = params
-            }
-            messageScroll.isHorizontalScrollBarEnabled = targetWidth != ViewGroup.LayoutParams.MATCH_PARENT
-        }
-
-        private fun containsMarkdownTable(markdown: String): Boolean {
-            val lines = markdown.lines()
-            return lines.windowed(2).any { (header, separator) ->
-                header.trim().startsWith("|") &&
-                    header.trim().endsWith("|") &&
-                    Regex("""^\s*\|?\s*:?-{3,}:?\s*(\|\s*:?-{3,}:?\s*)+\|?\s*$""").matches(separator)
             }
         }
 
@@ -616,47 +600,6 @@ class ChatAdapter(private val messages: MutableList<ChatMessage>) : RecyclerView
                 cells.size > expectedSize -> cells.take(expectedSize)
                 else -> cells + List(expectedSize - cells.size) { "" }
             }
-        }
-
-        private fun estimateTableWidthPx(markdown: String): Int {
-            val maxColumns = mutableListOf<Int>()
-            for (line in markdown.lines()) {
-                val trimmed = line.trim()
-                if (!trimmed.startsWith("|") || !trimmed.endsWith("|")) continue
-                val cells = trimmed.trim('|').split('|').map { it.trim() }
-                if (cells.all { it.replace(":", "").replace("-", "").isBlank() }) continue
-                cells.forEachIndexed { index, cell ->
-                    val width = displayWidth(cell).coerceAtLeast(4)
-                    if (index >= maxColumns.size) {
-                        maxColumns.add(width)
-                    } else if (width > maxColumns[index]) {
-                        maxColumns[index] = width
-                    }
-                }
-            }
-            if (maxColumns.size < 2) return ViewGroup.LayoutParams.MATCH_PARENT
-
-            val textSizePx = textView.textSize
-            val contentWidth = maxColumns.sumOf { (it * textSizePx * 0.62f).toInt() }
-            val cellPadding = dp(28) * maxColumns.size
-            val borders = dp(2) * (maxColumns.size + 1)
-            val estimated = contentWidth + cellPadding + borders
-            val viewport = (messageScroll.width.takeIf { it > 0 }
-                ?: (itemView.resources.displayMetrics.widthPixels - itemView.paddingStart - itemView.paddingEnd))
-                .coerceAtLeast(dp(280))
-            return estimated.coerceAtLeast(viewport).coerceAtMost(dp(2200))
-        }
-
-        private fun displayWidth(text: String): Int {
-            var width = 0
-            for (char in text) {
-                width += when {
-                    char.code <= 0x007F -> 1
-                    Character.UnicodeScript.of(char.code) == Character.UnicodeScript.HAN -> 2
-                    else -> 2
-                }
-            }
-            return width
         }
 
         private fun dp(value: Int): Int {
