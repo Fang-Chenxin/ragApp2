@@ -549,7 +549,7 @@ class ToolChatStreamPipelineTest(unittest.IsolatedAsyncioTestCase):
 
         service = ToolChatService(vector_store=SimpleNamespace(), llm=FakeLLM())
 
-        async def fake_context_docs(query):
+        async def fake_context_docs(query, conversation_history=None):
             return [], None
 
         async def fake_rerank(query, docs, model=None, model_config=None):
