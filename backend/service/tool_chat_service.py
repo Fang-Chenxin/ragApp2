@@ -115,7 +115,7 @@ class ToolChatService(
 
         t0 = time.perf_counter()
         # 非流式路径按顺序执行 RAG 检索和 rerank；流式路径会把部分阶段并行化。
-        context_docs, vector_error = await self._query_context_docs_with_timeout(user_query)
+        context_docs, vector_error = await self._query_context_docs_with_timeout(user_query, conversation_history)
         context_text = self._format_context_docs(context_docs)
         rag_sources = self._extract_rag_sources(context_docs)
         elapsed = round(time.perf_counter() - t0, 3)

@@ -22,7 +22,7 @@ class ToolChatStreamStagesMixin:
         """按 SearchPlan 查一次商品库，给最终目标商品提供兜底候选。"""
         direct_start = time.perf_counter()
         try:
-            products = await asyncio.to_thread(self._query_direct_selected_products, ctx.user_query, search_plan=ctx.search_plan)
+            products = await asyncio.to_thread(self._query_direct_selected_products, ctx.user_query, search_plan=ctx.search_plan, conversation_history=ctx.conversation_history)
             return products, round(time.perf_counter() - direct_start, 3), None
         except Exception as exc:
             error = f"原始需求召回失败：{type(exc).__name__}: {exc}"
@@ -186,7 +186,7 @@ class ToolChatStreamStagesMixin:
     ) -> AsyncGenerator[Dict[str, Any], None]:
         """执行向量检索和可选 LLM rerank，同时穿插输出需求分析增量。"""
         t0 = time.perf_counter()
-        vector_task = ctx.task_group.create(self._query_context_docs_with_timeout(ctx.user_query))
+        vector_task = ctx.task_group.create(self._query_context_docs_with_timeout(ctx.user_query, ctx.conversation_history))
         while not vector_task.done():
             # 检索期间不要让前端空等，优先输出已经生成的需求分析片段。
             try:

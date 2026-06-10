@@ -15,17 +15,59 @@ logger = get_logger("service.tool_chat")
 class ToolChatRagMixin:
     """知识库检索、上下文构造和 RAG rerank 能力。"""
 
-    def _query_context_docs(self, user_query: str) -> List[Any]:
-        """兼容新旧向量库接口，优先返回带来源 metadata 的结构化片段。"""
-        if hasattr(self.vector_store, "query_with_sources"):
-            return self.vector_store.query_with_sources(user_query)
-        return self.vector_store.query(user_query)
+    def _build_contextual_query(self, user_query: str, conversation_history: Optional[List[Dict[str, str]]] = None) -> str:
+        """构建带上下文的查询词，在追问场景下合并历史信息。"""
+        if not conversation_history:
+            return user_query
 
-    async def _query_context_docs_with_timeout(self, user_query: str) -> tuple[List[Any], Optional[str]]:
+        # 判断是否为追问
+        query = re.sub(r"\s+", "", user_query or "")
+        is_followup = bool(re.search(r"(再|那|这些|这几|上面|刚才|前面|换|还有|便宜点|贵点|对比|哪个|更)", query))
+        
+        if not is_followup:
+            return user_query
+
+        # 从历史中提取商品信息
+        product_info = []
+        for msg in reversed(conversation_history):
+            content = msg.get("content", "")
+            if not content:
+                continue
+            
+            # 尝试提取商品名称或类别
+            product_names = re.findall(r"(?:推荐|推荐了|介绍|为你找到|看看|试试|选择|购买)([^，。；;,.\n]{2,20})", content)
+            category_names = re.findall(r"(?:防晒霜|防晒乳|防晒喷雾|护肤品|化妆品|美妆)", content, re.I)
+            
+            for name in product_names:
+                clean_name = name.strip()
+                if clean_name and clean_name not in product_info and len(clean_name) > 2:
+                    product_info.append(clean_name)
+            for cat in category_names:
+                if cat not in product_info:
+                    product_info.append(cat)
+            
+            if len(product_info) >= 2:
+                break
+
+        if product_info:
+            context_hint = " ".join(product_info)
+            return f"{context_hint} {user_query}"
+        
+        return user_query
+
+    def _query_context_docs(self, user_query: str, conversation_history: Optional[List[Dict[str, str]]] = None) -> List[Any]:
+        """兼容新旧向量库接口，优先返回带来源 metadata 的结构化片段。"""
+        contextual_query = self._build_contextual_query(user_query, conversation_history)
+        
+        if hasattr(self.vector_store, "query_with_sources"):
+            return self.vector_store.query_with_sources(contextual_query)
+        return self.vector_store.query(contextual_query)
+
+    async def _query_context_docs_with_timeout(self, user_query: str, conversation_history: Optional[List[Dict[str, str]]] = None) -> tuple[List[Any], Optional[str]]:
         """在线程中执行向量检索，并用配置超时保护聊天主流程。"""
         try:
             context_docs = await asyncio.wait_for(
-                asyncio.to_thread(self._query_context_docs, user_query),
+                asyncio.to_thread(self._query_context_docs, user_query, conversation_history),
                 timeout=settings.rag_vector_search_timeout_seconds,
             )
             return context_docs, None

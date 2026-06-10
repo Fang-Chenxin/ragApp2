@@ -382,23 +382,152 @@ class ToolChatProductSelectionMixin:
         return plan
 
     @staticmethod
+    def _extract_json_from_text(text: str) -> Optional[str]:
+        """从文本中提取可能的JSON字符串，处理多种不规范格式。"""
+        text = text.strip()
+        
+        # 移除markdown代码块标记
+        text = re.sub(r"^```(?:json)?\s*", "", text, flags=re.I)
+        text = re.sub(r"\s*```$", "", text)
+        
+        # 尝试匹配最外层大括号对（处理嵌套情况）
+        brace_stack = 0
+        start_idx = -1
+        for i, char in enumerate(text):
+            if char == '{':
+                if brace_stack == 0:
+                    start_idx = i
+                brace_stack += 1
+            elif char == '}':
+                brace_stack -= 1
+                if brace_stack == 0 and start_idx != -1:
+                    return text[start_idx:i+1]
+        
+        # 如果找不到完整的大括号对，尝试找第一个大括号开始的内容
+        match = re.search(r"\{[\s\S]*", text)
+        if match:
+            return match.group(0)
+        
+        return None
+
+    @staticmethod
+    def _repair_json_syntax(json_str: str) -> str:
+        """修复常见的JSON语法问题。"""
+        if not json_str:
+            return json_str
+        
+        result = json_str
+        
+        # 修复未闭合的字符串
+        result = re.sub(r'"([^"]*)$', r'"\1"', result)
+        
+        # 修复未闭合的大括号
+        open_braces = result.count('{')
+        close_braces = result.count('}')
+        if open_braces > close_braces:
+            result += '}' * (open_braces - close_braces)
+        
+        # 修复未闭合的中括号
+        open_brackets = result.count('[')
+        close_brackets = result.count(']')
+        if open_brackets > close_brackets:
+            result += ']' * (open_brackets - close_brackets)
+        
+        # 修复键名缺少引号的问题
+        result = re.sub(r"(\{|,)\s*([a-zA-Z_\u4e00-\u9fa5]+)\s*:", r'\1 "\2":', result)
+        
+        # 修复字符串中的换行符
+        result = result.replace('\n', '\\n')
+        
+        return result
+
+    @staticmethod
     def _parse_search_plan_content(content: str, user_query: str = "") -> Optional[Dict[str, Any]]:
-        """从 LLM 文本中解析 SearchPlan JSON。"""
+        """从 LLM 文本中解析 SearchPlan JSON，增强容错处理。"""
         text = (content or "").strip()
         if not text:
             return None
-        text = re.sub(r"^```(?:json)?\s*", "", text, flags=re.I)
-        text = re.sub(r"\s*```$", "", text)
+        
+        # 步骤1：提取JSON字符串
+        json_str = ToolChatProductSelectionMixin._extract_json_from_text(text)
+        if not json_str:
+            return None
+        
+        # 步骤2：尝试直接解析
         try:
-            return ToolChatProductSelectionMixin._normalize_search_plan(json.loads(text), user_query)
+            return ToolChatProductSelectionMixin._normalize_search_plan(json.loads(json_str), user_query)
         except json.JSONDecodeError:
-            match = re.search(r"\{.*\}", text, flags=re.S)
-            if not match:
-                return None
-            try:
-                return ToolChatProductSelectionMixin._normalize_search_plan(json.loads(match.group(0)), user_query)
-            except json.JSONDecodeError:
-                return None
+            pass
+        
+        # 步骤3：尝试修复JSON语法后解析
+        repaired_json = ToolChatProductSelectionMixin._repair_json_syntax(json_str)
+        try:
+            return ToolChatProductSelectionMixin._normalize_search_plan(json.loads(repaired_json), user_query)
+        except json.JSONDecodeError:
+            pass
+        
+        # 步骤4：如果JSON解析完全失败，基于用户查询生成兜底的搜索计划
+        fallback_plan = ToolChatProductSelectionMixin._generate_fallback_search_plan(user_query)
+        if fallback_plan:
+            return fallback_plan
+        
+        return None
+
+    @staticmethod
+    def _generate_fallback_search_plan(user_query: str) -> Optional[Dict[str, Any]]:
+        """当LLM不返回结构化JSON时，基于规则生成兜底搜索计划。"""
+        if not user_query:
+            return None
+        
+        plan: Dict[str, Any] = {
+            "target_product": "",
+            "target_category": "",
+            "target_sub_category": "",
+            "query_text": user_query,
+            "fallback_query_texts": [],
+            "direct_terms": [],
+            "acceptable_fallback_terms": [],
+            "allowed_categories": [],
+            "forbidden_categories": [],
+            "excluded_brands": [],
+            "excluded_terms": [],
+            "excluded_attributes": [],
+            "is_followup": ToolChatProductSelectionMixin._infer_followup_from_query(user_query),
+            "context_carryover": "",
+            "comparison_intent": bool(re.search(r"(对比|哪个|哪款|哪种|哪一种|更划算|性价比)", user_query)),
+            "comparison_dimensions": [],
+            "price_preference": ToolChatProductSelectionMixin._infer_price_preference_from_query(user_query),
+            "fallback_notice_required": True,
+            "purchase_intent": "purchase_ready",
+            "purchase_intent_reason": "SearchPlan解析失败，使用规则兜底",
+            "reason": "LLM未返回结构化JSON，基于用户查询生成搜索计划",
+        }
+        
+        # 推断排除品牌
+        plan["excluded_brands"] = ToolChatProductSelectionMixin._infer_excluded_brands_from_query(user_query)
+        
+        # 推断排除关键词
+        plan["excluded_terms"] = ToolChatProductSelectionMixin._infer_excluded_terms_from_query(user_query)
+        
+        # 根据查询词推断品类
+        category_map = {
+            r"(防晒|防晒霜|防晒乳|防晒喷雾)": ("美妆护肤", "防晒"),
+            r"(护肤|面霜|精华|面膜|洁面|爽肤水)": ("美妆护肤", "护肤"),
+            r"(口红|唇釉|唇膏|粉底|眉笔|彩妆)": ("美妆护肤", "彩妆"),
+            r"(跑步鞋|运动鞋|跑鞋|篮球鞋|板鞋)": ("服饰运动", "跑步鞋"),
+            r"(T恤|卫衣|裤子|衣服|服饰)": ("服饰运动", "服装"),
+            r"(手机|平板|电脑|笔记本|耳机|数码)": ("数码电子", "数码"),
+            r"(饮料|牛奶|食品|零食|泡面)": ("食品饮料", "食品"),
+        }
+        
+        for pattern, (category, sub_category) in category_map.items():
+            if re.search(pattern, user_query, re.I):
+                plan["target_category"] = category
+                plan["target_sub_category"] = sub_category
+                plan["allowed_categories"] = [category]
+                break
+        
+        return plan
 
     @staticmethod
     def _extract_selected_products(
@@ -1050,9 +1179,60 @@ class ToolChatProductSelectionMixin:
             )
 
     @staticmethod
-    def _build_direct_product_query_text(user_query: str) -> str:
-        """构造后台直查的自然语言查询文本，目前直接使用原始用户问题。"""
-        return user_query.strip()
+    def _extract_context_from_history(conversation_history: Optional[List[Dict[str, str]]]) -> str:
+        """从对话历史中提取商品类别和名称信息。"""
+        if not conversation_history:
+            return ""
+
+        product_info = []
+        
+        for msg in reversed(conversation_history):
+            content = msg.get("content", "")
+            if not content:
+                continue
+
+            # 提取商品名称
+            product_names = re.findall(r"(?:推荐|推荐了|介绍|为你找到|看看|试试|选择|购买)([^，。；;,.\n]{2,20})", content)
+            # 提取品类关键词
+            category_patterns = [
+                r"(防晒霜|防晒乳|防晒喷雾|防晒)",
+                r"(护肤品|化妆品|美妆|彩妆)",
+                r"(手机|平板|电脑|笔记本|耳机)",
+                r"(饮料|牛奶|食品|零食|泡面)",
+                r"(衣服|鞋子|运动|服饰)",
+            ]
+            
+            for pattern in category_patterns:
+                matches = re.findall(pattern, content, re.I)
+                for match in matches:
+                    if match and match not in product_info:
+                        product_info.append(match)
+            
+            for name in product_names:
+                clean_name = name.strip()
+                if clean_name and clean_name not in product_info and len(clean_name) > 2:
+                    product_info.append(clean_name)
+            
+            if len(product_info) >= 3:
+                break
+
+        return " ".join(product_info)
+
+    @staticmethod
+    def _build_direct_product_query_text(user_query: str, conversation_history: Optional[List[Dict[str, str]]] = None) -> str:
+        """构造后台直查的自然语言查询文本，结合对话历史补全上下文。"""
+        query = user_query.strip()
+        
+        # 判断是否为追问
+        query_clean = re.sub(r"\s+", "", query)
+        is_followup = bool(re.search(r"(再|那|这些|这几|上面|刚才|前面|换|还有|便宜点|贵点|对比|哪个|更)", query_clean))
+        
+        if is_followup and conversation_history:
+            context = ToolChatProductSelectionMixin._extract_context_from_history(conversation_history)
+            if context:
+                return f"{context} {query}"
+        
+        return query
 
     @classmethod
     def _query_direct_selected_products(
@@ -1060,6 +1240,7 @@ class ToolChatProductSelectionMixin:
         user_query: str,
         limit: int = 5,
         search_plan: Optional[Dict[str, Any]] = None,
+        conversation_history: Optional[List[Dict[str, str]]] = None,
     ) -> List[Dict[str, Any]]:
         """根据 LLM SearchPlan 召回商品；计划不可用时用原始问题兜底。"""
         query_texts: List[str] = []
@@ -1069,16 +1250,24 @@ class ToolChatProductSelectionMixin:
                 if clean_text and clean_text not in query_texts:
                     query_texts.append(clean_text)
         if not query_texts:
-            query_text = cls._build_direct_product_query_text(user_query)
+            query_text = cls._build_direct_product_query_text(user_query, conversation_history)
             if query_text:
                 query_texts.append(query_text)
         if not query_texts:
             return []
 
+        # 获取要排除的品牌（从search_plan或用户查询中推断）
+        excluded_brands: List[str] = []
+        if search_plan:
+            excluded_brands = [str(item).strip() for item in (search_plan.get("excluded_brands") or []) if str(item).strip()]
+        # 如果search_plan中没有排除品牌，尝试从用户查询中推断
+        if not excluded_brands:
+            excluded_brands = cls._infer_excluded_brands_from_query(user_query)
+
         selected: List[Dict[str, Any]] = []
         seen_ids: set[str] = set()
         for query_text in query_texts:
-            arguments: Dict[str, Any] = {"text": query_text, "limit": max(limit, 10)}
+            arguments: Dict[str, Any] = {"text": query_text, "limit": max(limit, 15)}  # 增加召回数量，因为可能需要过滤排除品牌
             if search_plan:
                 allowed_categories = [str(item).strip() for item in (search_plan.get("allowed_categories") or []) if str(item).strip()]
                 if len(allowed_categories) == 1:
@@ -1089,10 +1278,23 @@ class ToolChatProductSelectionMixin:
             result = run_tool("query_products", arguments)
             if not isinstance(result, dict) or not result.get("ok") or result.get("total", 0) <= 0:
                 continue
-            for item in cls._extract_products_from_tool_result(result, limit=max(limit, 10)):
+            for item in cls._extract_products_from_tool_result(result, limit=max(limit, 15)):
                 product_id = str(item.get("product_id") or "").strip()
                 if not product_id or product_id in seen_ids:
                     continue
+                
+                # 检查是否为排除品牌
+                product_brand = str(item.get("brand") or "").strip()
+                is_excluded = False
+                if excluded_brands and product_brand:
+                    brand_lower = product_brand.lower()
+                    for excluded in excluded_brands:
+                        if excluded.lower() in brand_lower or brand_lower in excluded.lower():
+                            is_excluded = True
+                            break
+                if is_excluded:
+                    continue  # 跳过排除品牌的商品
+                
                 seen_ids.add(product_id)
                 selected.append(item)
                 if len(selected) >= limit:
