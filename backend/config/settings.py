@@ -230,7 +230,7 @@ class Settings(BaseSettings):
     rag_llm_rerank_max_tokens: int = 260  # 限制检查器输出长度，减少等待时间
     rag_trace_content_chars: int = 800  # RAG 日志中保留的知识片段原文字数
     rag_llm_rerank_min_score: int = 2  # 低于该分数的片段会被过滤；1-5 分
-    tool_chat_parallel_enabled: bool = True  # 导购流程是否并行执行需求分析、首轮工具规划和商品直查
+    tool_chat_parallel_enabled: bool = True  # 导购流程是否并行执行需求分析、SearchPlan 和首轮工具规划
 
     # 日志配置
     log_level: str = "DEBUG"  # 文件日志级别：DEBUG / INFO / WARNING / ERROR
